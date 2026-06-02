@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.eggs/
+
+# Env / secrets
+.env
+
+# Data & models
+data/books/
+data/registry/*.db
+data/*.db
+models/
+*.pdf
+
+# Qdrant / Redis local volumes (if mounted locally)
+qdrant_storage/
+redis_data/
+
+# Logs / caches
+*.log
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

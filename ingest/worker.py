@@ -1,0 +1,176 @@
+"""RQ-based ingestion worker.
+
+Enqueues and runs single-book ingestion jobs on a Redis Queue (RQ) so the
+GPU-bound, long-running ingestion pipeline executes out-of-band from the API.
+
+Usage
+-----
+Enqueue from the API/CLI::
+
+    from ingest.worker import enqueue_book
+    job_id = enqueue_book("/data/books/foo.pdf", title="Foo", author="Bar")
+
+Run a worker that consumes the queue::
+
+    python -m ingest.worker
+
+Heavy/optional libraries (``redis``, ``rq``, model backends) are imported
+lazily inside the functions so this module stays importable on a CPU-only box
+and passes ``py_compile``.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from config import settings
+from core.logging import get_logger
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
+    import rq
+    import redis
+
+logger = get_logger(__name__)
+
+# Generous default: a large scanned book OCR'd page-by-page can take hours.
+_JOB_TIMEOUT = "6h"
+# Keep finished job results around long enough for callers to poll them.
+_RESULT_TTL = 86400  # seconds (24h)
+# Keep failed jobs around for inspection/requeue.
+_FAILURE_TTL = 604800  # seconds (7d)
+
+
+def get_redis_connection() -> "redis.Redis":
+    """Open a Redis connection from ``settings.redis_url``."""
+    import redis  # lazy: optional dep, not needed for py_compile/import
+
+    return redis.Redis.from_url(settings.redis_url)
+
+
+def get_queue() -> "rq.Queue":
+    """Return the RQ queue bound to ``settings.ingest_queue`` on Redis."""
+    import rq  # lazy
+
+    connection = get_redis_connection()
+    return rq.Queue(settings.ingest_queue, connection=connection)
+
+
+def enqueue_book(path: str, **kw: Any) -> str:
+    """Enqueue a single book for asynchronous ingestion.
+
+    Parameters
+    ----------
+    path:
+        Absolute path to the PDF on the worker's filesystem.
+    **kw:
+        Forwarded to :func:`ingest_book_job` (e.g. ``title``, ``author``).
+
+    Returns
+    -------
+    str
+        The RQ job id, usable to poll job status/result later.
+    """
+    queue = get_queue()
+    # NB: pass args/kwargs explicitly (not positionally). RQ's enqueue() asserts
+    # no positional args are mixed with an explicit `kwargs=`/`args=` keyword.
+    job = queue.enqueue(
+        ingest_book_job,
+        args=(path,),
+        kwargs=dict(kw),
+        job_timeout=_JOB_TIMEOUT,
+        result_ttl=_RESULT_TTL,
+        failure_ttl=_FAILURE_TTL,
+    )
+    logger.info("Enqueued ingest job %s for %s", job.id, path)
+    return job.id
+
+
+def ingest_book_job(path: str, **kw: Any) -> dict:
+    """Worker entrypoint: ingest one book end-to-end.
+
+    Constructs the shared singletons (vector store, embedder, registry, OCR
+    backend), runs the ingestion pipeline, and returns the resulting
+    :class:`~core.models.IngestStats` as a plain ``dict`` (RQ-serializable).
+
+    Accepted keyword arguments
+    ---------------------------
+    title, author:
+        Optional metadata overrides passed through to the pipeline.
+    ocr_backend:
+        Optional OCR backend name override (defaults to ``settings.ocr_backend``).
+
+    Returns
+    -------
+    dict
+        ``IngestStats.model_dump()``.
+    """
+    # Lazy imports: these pull in heavy backends (torch/transformers/qdrant).
+    from ingest.embed import BGEM3Embedder
+    from ingest.ocr import get_ocr_backend
+    from ingest.pipeline import ingest_book
+    from ingest.registry import Registry
+    from retrieval.search import QdrantStore
+
+    title = kw.pop("title", None)
+    author = kw.pop("author", None)
+    ocr_backend_name = kw.pop("ocr_backend", settings.ocr_backend)
+    if kw:
+        logger.warning("Ignoring unexpected ingest kwargs: %s", sorted(kw))
+
+    logger.info("Starting ingest job for %s", path)
+
+    store = QdrantStore()
+    store.ensure_collection()
+
+    embedder = BGEM3Embedder()
+    registry = Registry()
+
+    # OCR is only needed for scanned pages; if the backend cannot be built
+    # (e.g. missing model on this host), proceed without it so native books
+    # still ingest. The pipeline records per-page OCR failures itself.
+    ocr = None
+    try:
+        ocr = get_ocr_backend(ocr_backend_name)
+    except Exception as exc:  # noqa: BLE001 - backend init is best-effort
+        logger.warning(
+            "Could not initialize OCR backend %r (%s); "
+            "scanned pages will be skipped",
+            ocr_backend_name,
+            exc,
+        )
+
+    stats = ingest_book(
+        path,
+        store=store,
+        embedder=embedder,
+        registry=registry,
+        ocr=ocr,
+        title=title,
+        author=author,
+    )
+    logger.info(
+        "Finished ingest job for %s: status=%s chunks=%d",
+        path,
+        stats.status,
+        stats.num_chunks,
+    )
+    return stats.model_dump()
+
+
+def run_worker() -> None:
+    """Start an RQ worker consuming :func:`get_queue` until interrupted."""
+    import rq  # lazy
+
+    connection = get_redis_connection()
+    queue = rq.Queue(settings.ingest_queue, connection=connection)
+    worker = rq.Worker([queue], connection=connection)
+    logger.info(
+        "Starting RQ worker on queue %r (redis=%s)",
+        settings.ingest_queue,
+        settings.redis_url,
+    )
+    worker.work(with_scheduler=True)
+
+
+if __name__ == "__main__":
+    run_worker()

@@ -1,0 +1,29 @@
+# Local infra: Qdrant (vector DB) + Redis (ingestion queue).
+# Start with: docker compose up -d
+# The Python app (API + workers) runs on the host (or the GPU server) and
+# connects to these via QDRANT_URL / REDIS_URL in .env.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # HTTP / REST
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    # For a 500k-1M chunk corpus, on-disk payload + scalar quantization keep
+    # RAM in check; the app enables quantization at collection-creation time.
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
+volumes:
+  qdrant_storage:
+  redis_data:

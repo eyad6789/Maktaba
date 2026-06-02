@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Maktabah · ask your library</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Amiri:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --paper:#f3ecdd;          /* warm parchment            */
+    --paper-2:#ece2cd;        /* deeper parchment          */
+    --card:#fbf6ec;           /* page card                 */
+    --ink:#22201b;            /* near-black ink            */
+    --ink-soft:#5d564a;       /* faded ink                 */
+    --ink-faint:#8a8275;      /* marginalia                */
+    --ox:#7a2418;             /* oxblood accent            */
+    --ox-bright:#9c3322;      /* brighter oxblood          */
+    --gold:#a8842c;           /* muted gold                */
+    --green:#4f6f44;          /* connected                 */
+    --rule:#d9cdb3;           /* ruled lines / borders     */
+    --shadow:18px 22px 50px -28px rgba(40,28,15,.45);
+    --serif:"Newsreader",Georgia,"Times New Roman",serif;
+    --display:"Fraunces",Georgia,serif;
+    --arabic:"Amiri","Newsreader",serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:var(--serif);
+    color:var(--ink);
+    background:var(--paper);
+    background-image:
+      radial-gradient(120% 90% at 50% -10%, #f7f1e4 0%, var(--paper) 45%, var(--paper-2) 100%);
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+    display:flex; flex-direction:column;
+    overflow:hidden;
+  }
+  /* paper grain */
+  body::after{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:9; opacity:.05;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* ── header ─────────────────────────────────────────── */
+  header{
+    flex:0 0 auto; z-index:10;
+    display:flex; align-items:baseline; justify-content:space-between; gap:1rem;
+    padding:1.15rem clamp(1rem,4vw,3rem) 1rem;
+    border-bottom:1px solid var(--rule);
+    background:linear-gradient(var(--paper), rgba(243,236,221,.6));
+  }
+  .brand{display:flex; align-items:baseline; gap:.7rem; flex-wrap:wrap}
+  .brand .mark{
+    font-family:var(--arabic); font-size:1.9rem; font-weight:700; color:var(--ox);
+    line-height:1; letter-spacing:.5px;
+  }
+  .brand .word{
+    font-family:var(--display); font-size:1.42rem; font-weight:600;
+    font-variation-settings:"opsz" 40; letter-spacing:.2px;
+  }
+  .brand .tag{
+    font-style:italic; color:var(--ink-faint); font-size:.92rem; letter-spacing:.2px;
+  }
+  .status{
+    display:flex; align-items:center; gap:.5rem;
+    font-size:.82rem; color:var(--ink-soft);
+    font-variant:small-caps; letter-spacing:.08em; white-space:nowrap;
+  }
+  .dot{width:.62rem; height:.62rem; border-radius:50%; background:var(--ink-faint);
+    box-shadow:0 0 0 0 rgba(79,111,68,.5);}
+  .status.online .dot{background:var(--green); animation:pulse 2.4s infinite}
+  .status.offline .dot{background:var(--ox-bright)}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(79,111,68,.45)}70%{box-shadow:0 0 0 7px rgba(79,111,68,0)}100%{box-shadow:0 0 0 0 rgba(79,111,68,0)}}
+
+  /* ── transcript ─────────────────────────────────────── */
+  main{
+    flex:1 1 auto; overflow-y:auto; overflow-x:hidden;
+    background-image:repeating-linear-gradient(transparent, transparent 37px, var(--rule) 37px, var(--rule) 38px);
+    background-attachment:local;
+  }
+  .column{
+    max-width:780px; margin:0 auto; padding:2.2rem clamp(1rem,4vw,2rem) 7rem;
+    display:flex; flex-direction:column; gap:1.7rem;
+  }
+
+  /* empty / welcome state */
+  .welcome{margin-top:5vh; text-align:center; animation:rise .8s ease both}
+  .welcome h1{
+    font-family:var(--display); font-weight:400; font-size:clamp(2rem,5vw,3rem);
+    font-variation-settings:"opsz" 120; line-height:1.1; margin-bottom:.6rem;
+  }
+  .welcome h1 em{color:var(--ox); font-style:italic}
+  .welcome p{color:var(--ink-soft); max-width:34rem; margin:0 auto 2rem; font-size:1.06rem}
+  .examples{display:flex; flex-direction:column; gap:.7rem; max-width:33rem; margin:0 auto}
+  .chip{
+    border:1px solid var(--rule); background:var(--card); color:var(--ink);
+    border-radius:2px; padding:.7rem 1rem; cursor:pointer; font-family:inherit;
+    font-size:1rem; text-align:left; transition:.18s; box-shadow:2px 3px 0 rgba(122,36,24,.07);
+  }
+  .chip:hover{border-color:var(--ox); transform:translate(-1px,-1px); box-shadow:4px 5px 0 rgba(122,36,24,.12)}
+  .chip[dir="rtl"]{font-family:var(--arabic); text-align:right; font-size:1.2rem}
+
+  /* messages */
+  .msg{animation:rise .45s ease both}
+  @keyframes rise{from{opacity:0; transform:translateY(10px)}to{opacity:1; transform:none}}
+  .who{
+    font-variant:small-caps; letter-spacing:.12em; font-size:.74rem; color:var(--ink-faint);
+    margin-bottom:.35rem; display:flex; align-items:center; gap:.5rem;
+  }
+  .who::before{content:""; width:1.4rem; height:1px; background:var(--ink-faint)}
+  .msg.user .who{color:var(--ox)}
+  .msg.user .who::before{background:var(--ox)}
+
+  .bubble{font-size:1.12rem}
+  .msg.user .bubble{
+    background:var(--card); border-left:3px solid var(--ox);
+    padding:.85rem 1.1rem; border-radius:0 3px 3px 0; box-shadow:var(--shadow);
+  }
+  .msg.user .bubble[dir="rtl"]{border-left:none; border-right:3px solid var(--ox); border-radius:3px 0 0 3px}
+  .bubble[dir="rtl"]{font-family:var(--arabic); font-size:1.3rem; line-height:1.9}
+  .bubble sup.cite{
+    font-family:var(--serif); color:var(--ox-bright); font-weight:500; font-size:.62em;
+    padding:0 .08em; cursor:default;
+  }
+  .ungrounded{color:var(--ink-soft); font-style:italic}
+
+  /* sources / footnotes */
+  .sources{margin-top:.9rem; padding-top:.7rem; border-top:1px dashed var(--rule)}
+  .sources h4{
+    font-variant:small-caps; letter-spacing:.1em; font-size:.72rem; font-weight:500;
+    color:var(--ink-faint); margin-bottom:.45rem; font-family:var(--serif);
+  }
+  .src{display:flex; gap:.55rem; font-size:.92rem; color:var(--ink-soft); margin-bottom:.3rem}
+  .src .n{color:var(--ox); font-weight:600; min-width:1.4rem}
+  .src .ttl{color:var(--ink); font-style:italic}
+  .src .pg{color:var(--ink-faint); font-variant:small-caps; letter-spacing:.04em}
+
+  /* typing */
+  .typing{display:inline-flex; gap:.32rem; align-items:center; padding:.4rem 0}
+  .typing span{width:.5rem; height:.5rem; border-radius:50%; background:var(--ox); opacity:.4; animation:blink 1.2s infinite}
+  .typing span:nth-child(2){animation-delay:.2s}
+  .typing span:nth-child(3){animation-delay:.4s}
+  @keyframes blink{0%,80%,100%{opacity:.25; transform:translateY(0)}40%{opacity:.9; transform:translateY(-3px)}}
+
+  /* ── composer ───────────────────────────────────────── */
+  .dock{
+    position:fixed; left:0; right:0; bottom:0; z-index:10;
+    padding:1rem clamp(1rem,4vw,2rem) 1.3rem;
+    background:linear-gradient(rgba(243,236,221,0), var(--paper) 38%);
+  }
+  .composer{
+    max-width:780px; margin:0 auto; display:flex; align-items:flex-end; gap:.7rem;
+    background:var(--card); border:1px solid var(--rule); border-radius:4px;
+    padding:.55rem .6rem .55rem 1rem; box-shadow:var(--shadow);
+  }
+  .composer:focus-within{border-color:var(--ox)}
+  textarea{
+    flex:1; border:none; background:none; resize:none; outline:none;
+    font-family:var(--serif); font-size:1.08rem; color:var(--ink); line-height:1.5;
+    max-height:8.5rem; padding:.35rem 0;
+  }
+  textarea::placeholder{color:var(--ink-faint); font-style:italic}
+  .send{
+    flex:0 0 auto; width:2.9rem; height:2.9rem; border-radius:50%; border:none; cursor:pointer;
+    background:radial-gradient(circle at 35% 30%, var(--ox-bright), var(--ox) 70%);
+    color:#f3ecdd; font-size:1.15rem; display:grid; place-items:center; transition:.16s;
+    box-shadow:0 3px 10px -2px rgba(122,36,24,.5);
+  }
+  .send:hover:not(:disabled){transform:translateY(-2px) rotate(-6deg)}
+  .send:disabled{opacity:.45; cursor:not-allowed}
+  .hint{max-width:780px; margin:.5rem auto 0; font-size:.74rem; color:var(--ink-faint); text-align:center; font-style:italic}
+
+  /* scrollbar */
+  main::-webkit-scrollbar{width:10px}
+  main::-webkit-scrollbar-thumb{background:var(--rule); border-radius:10px; border:3px solid var(--paper)}
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="mark">مكتبة</span>
+      <span class="word">Maktabah</span>
+      <span class="tag">— ask your library</span>
+    </div>
+    <div class="status" id="status"><span class="dot"></span><span id="status-text">connecting…</span></div>
+  </header>
+
+  <main id="main">
+    <div class="column" id="column">
+      <div class="welcome" id="welcome">
+        <h1>Ask your <em>library</em>.</h1>
+        <p>Pose a question in Arabic or English. Answers are drawn only from your ingested books — with the page they came from.</p>
+        <div class="examples" id="examples">
+          <button class="chip" dir="rtl">ما الفكرة الرئيسية في الفصل الأول؟</button>
+          <button class="chip">What does the author say about justice and law?</button>
+          <button class="chip" dir="rtl">لخّص أهم النقاط في الكتاب.</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div class="dock">
+    <form class="composer" id="composer" autocomplete="off">
+      <textarea id="input" rows="1" placeholder="Ask anything about your books…  •  اسأل عن كتبك…"></textarea>
+      <button class="send" id="send" type="submit" title="Send" aria-label="Send">↑</button>
+    </form>
+    <div class="hint">Enter to send · Shift+Enter for a new line</div>
+  </div>
+
+<script>
+(() => {
+  const API = "";                       // same origin
+  const messages = [];                  // {role, content}
+  const els = {
+    main: document.getElementById("main"),
+    column: document.getElementById("column"),
+    welcome: document.getElementById("welcome"),
+    input: document.getElementById("input"),
+    send: document.getElementById("send"),
+    form: document.getElementById("composer"),
+    status: document.getElementById("status"),
+    statusText: document.getElementById("status-text"),
+  };
+  let busy = false;
+
+  const isArabic = (t) => /[؀-ۿ]/.test(t || "");
+  const esc = (s) => s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+  function setDir(el, text){
+    if (isArabic(text)) el.setAttribute("dir","rtl"); else el.setAttribute("dir","ltr");
+  }
+
+  // ── status ──────────────────────────────────────────
+  async function refreshStatus(){
+    try{
+      const r = await fetch(API + "/status");
+      if(!r.ok) throw 0;
+      const s = await r.json();
+      els.status.className = "status online";
+      els.statusText.textContent = `${s.books} books · ${s.chunks.toLocaleString()} passages`;
+    }catch{
+      els.status.className = "status offline";
+      els.statusText.textContent = "offline";
+    }
+  }
+
+  // ── rendering ───────────────────────────────────────
+  function scrollDown(){ els.main.scrollTo({top: els.main.scrollHeight, behavior:"smooth"}); }
+
+  function addUser(text){
+    if(els.welcome) { els.welcome.remove(); els.welcome = null; }
+    const wrap = document.createElement("div");
+    wrap.className = "msg user";
+    const bubble = document.createElement("div");
+    bubble.className = "bubble"; setDir(bubble, text); bubble.textContent = text;
+    wrap.innerHTML = `<div class="who">You · أنت</div>`;
+    wrap.appendChild(bubble);
+    els.column.appendChild(wrap); scrollDown();
+  }
+
+  function renderAnswer(text){
+    // escape, then turn [n] / [n, m] markers into superscript citations
+    return esc(text).replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, (m, nums) =>
+      nums.split(",").map(n => `<sup class="cite">${n.trim()}</sup>`).join(""));
+  }
+
+  function citedNumbers(text){
+    const seen = new Set(), out = [];
+    const re = /\[(\d+(?:\s*,\s*\d+)*)\]/g; let m;
+    while((m = re.exec(text))) m[1].split(",").forEach(n=>{ n=+n.trim(); if(!seen.has(n)){seen.add(n); out.push(n);} });
+    return out;
+  }
+
+  function sourcesBlock(data){
+    const nums = citedNumbers(data.answer);
+    const list = nums.length ? nums : data.sources.map((_,i)=>i+1).slice(0,3);
+    if(!data.sources.length || !list.length) return "";
+    const rows = list.map(n => {
+      const s = data.sources[n-1]; if(!s) return "";
+      const pg = s.page_start === s.page_end ? `p. ${s.page_start}` : `pp. ${s.page_start}–${s.page_end}`;
+      const author = s.author ? ` — ${esc(s.author)}` : "";
+      return `<div class="src"><span class="n">[${n}]</span><span><span class="ttl">${esc(s.title)||"Untitled"}</span>${author} · <span class="pg">${pg}</span></span></div>`;
+    }).join("");
+    return `<div class="sources"><h4>Sources · المصادر</h4>${rows}</div>`;
+  }
+
+  function addAssistant(data){
+    const wrap = document.createElement("div");
+    wrap.className = "msg assistant";
+    const bubble = document.createElement("div");
+    bubble.className = "bubble"; setDir(bubble, data.answer);
+    if(!data.grounded) bubble.classList.add("ungrounded");
+    bubble.innerHTML = renderAnswer(data.answer) + sourcesBlock(data);
+    wrap.innerHTML = `<div class="who">Maktabah</div>`;
+    wrap.appendChild(bubble);
+    els.column.appendChild(wrap); scrollDown();
+  }
+
+  function addTyping(){
+    const wrap = document.createElement("div");
+    wrap.className = "msg assistant"; wrap.id = "typing";
+    wrap.innerHTML = `<div class="who">Maktabah</div><div class="typing"><span></span><span></span><span></span></div>`;
+    els.column.appendChild(wrap); scrollDown();
+  }
+  function removeTyping(){ const t = document.getElementById("typing"); if(t) t.remove(); }
+
+  function addError(msg){
+    const wrap = document.createElement("div");
+    wrap.className = "msg assistant";
+    wrap.innerHTML = `<div class="who">Maktabah</div><div class="bubble ungrounded">⚠ ${esc(msg)}</div>`;
+    els.column.appendChild(wrap); scrollDown();
+  }
+
+  // ── send ────────────────────────────────────────────
+  async function send(text){
+    text = text.trim();
+    if(!text || busy) return;
+    busy = true; els.send.disabled = true;
+    addUser(text);
+    messages.push({role:"user", content:text});
+    els.input.value = ""; autosize();
+    addTyping();
+    try{
+      const r = await fetch(API + "/chat", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ messages })
+      });
+      removeTyping();
+      if(!r.ok){ const t = await r.text(); addError(`Request failed (${r.status}). ${t.slice(0,160)}`); }
+      else{
+        const data = await r.json();
+        addAssistant(data);
+        messages.push({role:"assistant", content:data.answer});
+      }
+    }catch(e){
+      removeTyping();
+      addError("Could not reach the server. Is the API running?");
+    }finally{
+      busy = false; els.send.disabled = false; els.input.focus();
+    }
+  }
+
+  // ── input behaviour ─────────────────────────────────
+  function autosize(){ els.input.style.height = "auto"; els.input.style.height = Math.min(els.input.scrollHeight, 136) + "px"; }
+  els.input.addEventListener("input", () => { autosize(); setDir(els.input, els.input.value); });
+  els.input.addEventListener("keydown", (e) => {
+    if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); send(els.input.value); }
+  });
+  els.form.addEventListener("submit", (e) => { e.preventDefault(); send(els.input.value); });
+  document.querySelectorAll(".chip").forEach(c =>
+    c.addEventListener("click", () => { els.input.value = c.textContent; autosize(); setDir(els.input, c.textContent); send(c.textContent); }));
+
+  refreshStatus();
+  setInterval(refreshStatus, 15000);
+  els.input.focus();
+})();
+</script>
+</body>
+</html>

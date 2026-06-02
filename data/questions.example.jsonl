@@ -1,0 +1,4 @@
+{"question": "What is the main argument of the first chapter?"}
+{"question": "ما هي الفكرة الرئيسية في الفصل الأول؟"}
+{"question": "Who is the author's main influence?", "expect_book_id": "REPLACE_WITH_REAL_BOOK_ID", "expect_page": 12}
+{"question": "اذكر تعريف المؤلف للعدالة.", "book_ids": ["REPLACE_WITH_REAL_BOOK_ID"]}

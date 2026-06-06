@@ -238,24 +238,26 @@ def query(request: Request, req: QueryRequest) -> QueryResponse:
     if not question:
         raise HTTPException(status_code=400, detail="question must not be empty")
 
-    # Lazy import: pulls in the anthropic client only when actually answering.
+    # Lazy import: keeps heavy/LLM deps out of module import.
     from llm.answer import answer_question
+    from retrieval.pipeline import retrieve_for_route
+    from retrieval.route import classify_route, coerce_route
 
     embedder = _get_embedder(request)
     store = _get_store(request)
     reranker = _get_reranker(request)
 
+    # Route the question (whole-book/thematic vs factual), then retrieve over the
+    # appropriate index levels. An explicit req.route overrides the classifier.
+    route = coerce_route(req.route) or classify_route(question, req.book_ids)
     embedding = embedder.embed_query(question)
-    candidates = store.hybrid_search(
-        embedding,
-        top_k=settings.search_top_k,
-        book_ids=req.book_ids,
+    rerank_top_k = req.top_k if req.top_k and req.top_k > 0 else settings.rerank_top_k
+    reranked = retrieve_for_route(
+        question, embedding, store, reranker, route,
+        book_ids=req.book_ids, rerank_top_k=rerank_top_k,
     )
 
-    rerank_top_k = req.top_k if req.top_k and req.top_k > 0 else settings.rerank_top_k
-    reranked = reranker.rerank(question, candidates, top_k=rerank_top_k)
-
-    answer = answer_question(question, reranked, model=req.model)
+    answer = answer_question(question, reranked, model=req.model, route=route)
 
     return QueryResponse(
         answer=answer.answer,
@@ -277,30 +279,34 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
     if not req.messages or req.messages[-1].role != "user" or not req.messages[-1].content.strip():
         raise HTTPException(status_code=400, detail="last message must be a non-empty user turn")
 
-    # Lazy import: pulls in the anthropic client only when actually answering.
+    # Lazy import: keeps heavy/LLM deps out of module import.
     from llm.chat import chat_answer, condense_query
+    from retrieval.pipeline import retrieve_for_route
+    from retrieval.route import classify_route, coerce_route
 
     embedder = _get_embedder(request)
     store = _get_store(request)
     reranker = _get_reranker(request)
 
     messages = [m.model_dump() for m in req.messages]
+    # Condensation is a cheap rewrite — always use the small utility model, even
+    # when req.model overrides the (larger) model used for the actual answer.
     search_query = (
-        condense_query(messages, model=req.model)
+        condense_query(messages, model=settings.utility_model)
         if req.condense
         else req.messages[-1].content.strip()
     )
 
+    # Route on the (condensed) standalone query, then retrieve over levels.
+    route = coerce_route(req.route) or classify_route(search_query, req.book_ids)
     embedding = embedder.embed_query(search_query)
-    candidates = store.hybrid_search(
-        embedding,
-        top_k=settings.search_top_k,
-        book_ids=req.book_ids,
-    )
     rerank_top_k = req.top_k if req.top_k and req.top_k > 0 else settings.rerank_top_k
-    reranked = reranker.rerank(search_query, candidates, top_k=rerank_top_k)
+    reranked = retrieve_for_route(
+        search_query, embedding, store, reranker, route,
+        book_ids=req.book_ids, rerank_top_k=rerank_top_k,
+    )
 
-    answer = chat_answer(messages, reranked, model=req.model)
+    answer = chat_answer(messages, reranked, model=req.model, route=route)
 
     return ChatResponse(
         answer=answer.answer,

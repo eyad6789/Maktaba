@@ -113,6 +113,7 @@ def ingest_book_job(path: str, **kw: Any) -> dict:
 
     title = kw.pop("title", None)
     author = kw.pop("author", None)
+    force = bool(kw.pop("force", False))
     ocr_backend_name = kw.pop("ocr_backend", settings.ocr_backend)
     if kw:
         logger.warning("Ignoring unexpected ingest kwargs: %s", sorted(kw))
@@ -147,6 +148,7 @@ def ingest_book_job(path: str, **kw: Any) -> dict:
         ocr=ocr,
         title=title,
         author=author,
+        force=force,
     )
     logger.info(
         "Finished ingest job for %s: status=%s chunks=%d",

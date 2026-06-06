@@ -268,6 +268,86 @@ def test_enqueue_book():
     assert job.func_name.endswith("ingest_book_job"), job.func_name
 
 
+def test_force_reingest():
+    """force=True re-ingests an already-completed book (completed, not skipped)."""
+    store = _store()
+    reg = Registry()
+    skipped = ingest_book(_PDF_JUSTICE, store=store, embedder=_embedder, registry=reg, title="Justice")
+    assert skipped.status == "skipped", skipped
+    forced = ingest_book(
+        _PDF_JUSTICE, store=store, embedder=_embedder, registry=reg, title="Justice", force=True
+    )
+    assert forced.status == "completed", forced
+    assert forced.num_chunks >= 1
+
+
+def test_comprehension_layer_and_global_route():
+    """Ingest with the comprehension layer ON; summary nodes are built, are
+    level-filterable in Qdrant, and the GLOBAL route surfaces them."""
+    from retrieval.pipeline import retrieve_for_route
+    from retrieval.route import Route
+
+    pdf = _TMP / "comprehension.pdf"
+    make_native_pdf(pdf, [JUSTICE, JUSTICE, JUSTICE, JUSTICE])
+
+    store = _store()
+    reg = Registry()
+    install_fake_llm("This book examines justice, fairness, and the rule of law in society.")
+
+    orig = settings.enable_comprehension
+    settings.enable_comprehension = True
+    try:
+        stats = ingest_book(pdf, store=store, embedder=_embedder, registry=reg, title="On Justice")
+    finally:
+        settings.enable_comprehension = orig
+
+    assert stats.status == "completed", stats
+    assert stats.num_summary_nodes >= 1, f"no summary nodes built: {stats}"
+
+    # The book overview node is retrievable and filterable by level.
+    q = _embedder.embed_query("justice fairness law")
+    summaries = store.hybrid_search(q, top_k=settings.search_top_k, levels=["book_summary"])
+    assert summaries, "book_summary node not retrievable via levels filter"
+    assert all(s.level == "book_summary" for s in summaries)
+    assert summaries[0].book_id == stats.book_id
+
+    # A passages-only search must NOT return the summary node.
+    passages = store.hybrid_search(q, top_k=settings.search_top_k, levels=["passage"])
+    assert passages and all(p.level == "passage" for p in passages)
+
+    # GLOBAL route surfaces a summary node as part of the answer context.
+    ctx = retrieve_for_route(
+        "what is the main idea of this book", q, store, _reranker, Route.GLOBAL,
+        book_ids=[stats.book_id],
+    )
+    assert ctx, "GLOBAL route returned no context"
+    assert any(r.level in ("book_summary", "chapter_summary") for r in ctx), (
+        "GLOBAL route did not surface a summary node"
+    )
+
+    # End to end through the API: a thematic question auto-routes GLOBAL and the
+    # answer's sources include a summary node.
+    import ingest.embed as embed_mod
+    import retrieval.rerank as rerank_mod
+
+    embed_mod.BGEM3Embedder = FakeEmbedder
+    rerank_mod.Reranker = FakeReranker
+
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/query", json={
+            "question": "what is the main idea of this book",
+            "book_ids": [stats.book_id],
+        })
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["grounded"] is True, body
+        levels = {s.get("level") for s in body["sources"]}
+        assert levels & {"book_summary", "chapter_summary"}, body["sources"]
+
+
 TESTS = [
     test_native_pdf_extraction,
     test_ingest_native_and_query,
@@ -277,6 +357,8 @@ TESTS = [
     test_condense_query,
     test_api_endpoints,
     test_enqueue_book,
+    test_force_reingest,
+    test_comprehension_layer_and_global_route,
 ]
 
 

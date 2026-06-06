@@ -213,6 +213,29 @@
 <script>
 (() => {
   const API = "";                       // same origin
+  // API key: take from ?api_key=... (then persist + scrub the URL), else from
+  // localStorage, else prompt on first protected call. Sent as X-API-Key.
+  let API_KEY = new URLSearchParams(location.search).get("api_key")
+              || localStorage.getItem("ragApiKey") || "";
+  if (API_KEY) {
+    localStorage.setItem("ragApiKey", API_KEY);
+    if (location.search.includes("api_key")) history.replaceState(null, "", location.pathname);
+  }
+  function ensureKey(){
+    if (!API_KEY) {
+      API_KEY = (prompt("Enter API key") || "").trim();
+      if (API_KEY) localStorage.setItem("ragApiKey", API_KEY);
+    }
+    return API_KEY;
+  }
+  async function apiFetch(path, opts={}){
+    ensureKey();
+    const headers = Object.assign({}, opts.headers || {},
+                                  API_KEY ? {"X-API-Key": API_KEY} : {});
+    const r = await fetch(API + path, Object.assign({}, opts, {headers}));
+    if (r.status === 401) { localStorage.removeItem("ragApiKey"); API_KEY = ""; }
+    return r;
+  }
   const messages = [];                  // {role, content}
   const els = {
     main: document.getElementById("main"),
@@ -236,7 +259,7 @@
   // ── status ──────────────────────────────────────────
   async function refreshStatus(){
     try{
-      const r = await fetch(API + "/status");
+      const r = await apiFetch("/status");
       if(!r.ok) throw 0;
       const s = await r.json();
       els.status.className = "status online";
@@ -324,7 +347,7 @@
     els.input.value = ""; autosize();
     addTyping();
     try{
-      const r = await fetch(API + "/chat", {
+      const r = await apiFetch("/chat", {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ messages })
       });

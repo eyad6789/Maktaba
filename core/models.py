@@ -58,6 +58,14 @@ class Chunk(BaseModel):
     chunk_index: int
     lang: str | None = None
     token_count: int = 0
+    # Hierarchical comprehension layer. "passage" = a raw retrievable chunk
+    # (the default, so every existing chunk stays valid); "chapter_summary" and
+    # "book_summary" are nodes produced at ingest time and stored alongside the
+    # raw chunks. `parent_id` links a node to its parent (chapter -> book);
+    # `chapter_title` labels a summary node's section.
+    level: str = "passage"
+    parent_id: str | None = None
+    chapter_title: str | None = None
 
 
 class SparseVector(BaseModel):
@@ -88,6 +96,9 @@ class SearchResult(BaseModel):
     chunk_index: int
     lang: str | None = None
     rerank_score: float | None = None
+    level: str = "passage"             # "passage" | "chapter_summary" | "book_summary"
+    parent_id: str | None = None
+    chapter_title: str | None = None
 
 
 class Citation(BaseModel):
@@ -116,6 +127,7 @@ class IngestStats(BaseModel):
     scanned_pages: int = 0
     failed_pages: list[int] = Field(default_factory=list)
     num_chunks: int = 0
+    num_summary_nodes: int = 0         # chapter/book comprehension nodes built
     status: str = "completed"          # "completed" | "failed" | "skipped"
     error: str | None = None
 
@@ -128,6 +140,7 @@ class QueryRequest(BaseModel):
     top_k: int | None = None           # override reranker top_k
     book_ids: list[str] | None = None  # optional filter to specific books
     model: str | None = None           # override answer model
+    route: str | None = None           # force "local"|"global" (else auto-classified)
 
 
 class QueryResponse(BaseModel):
@@ -163,6 +176,7 @@ class ChatRequest(BaseModel):
     book_ids: list[str] | None = None  # optional filter to specific books
     model: str | None = None           # override answer model
     condense: bool = True              # rewrite follow-ups into a standalone query
+    route: str | None = None           # force "local"|"global" (else auto-classified)
 
 
 class ChatResponse(BaseModel):

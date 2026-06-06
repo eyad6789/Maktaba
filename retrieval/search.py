@@ -166,30 +166,50 @@ class QdrantStore:
 
     # -- reads ----------------------------------------------------------------
 
+    @staticmethod
+    def _build_filter(
+        book_ids: list[str] | None,
+        levels: list[str] | None = None,
+    ) -> "Any | None":
+        """Compose a Qdrant payload filter from optional book + level constraints.
+
+        Both constraints are ``MatchAny`` (OR within a field) AND-ed together.
+        Returns ``None`` when neither is given — i.e. an unfiltered search,
+        identical to the original behaviour. ``qm`` is imported lazily so the
+        module stays importable without ``qdrant_client``.
+        """
+        from qdrant_client import models as qm
+
+        must = []
+        if book_ids:
+            must.append(
+                qm.FieldCondition(key="book_id", match=qm.MatchAny(any=list(book_ids)))
+            )
+        if levels:
+            must.append(
+                qm.FieldCondition(key="level", match=qm.MatchAny(any=list(levels)))
+            )
+        return qm.Filter(must=must) if must else None
+
     def hybrid_search(
         self,
         query: Embedding,
         top_k: int = settings.search_top_k,
         book_ids: list[str] | None = None,
+        levels: list[str] | None = None,
     ) -> list[SearchResult]:
         """Hybrid dense+sparse retrieval fused with RRF via Qdrant's Query API.
 
         Prefetches the top ``top_k`` from both the dense and sparse vectors, then
         fuses with Reciprocal Rank Fusion. When ``book_ids`` is given, restricts
-        results to those books. Returns up to ``top_k`` :class:`SearchResult`.
+        results to those books; when ``levels`` is given (e.g.
+        ``["chapter_summary", "book_summary"]``), restricts to those node levels.
+        ``levels=None`` searches every level — identical to the original
+        behaviour. Returns up to ``top_k`` :class:`SearchResult`.
         """
         from qdrant_client import models as qm
 
-        query_filter = None
-        if book_ids:
-            query_filter = qm.Filter(
-                must=[
-                    qm.FieldCondition(
-                        key="book_id",
-                        match=qm.MatchAny(any=list(book_ids)),
-                    )
-                ]
-            )
+        query_filter = self._build_filter(book_ids, levels)
 
         dense_vector = list(query.dense)
         sparse_vector = qm.SparseVector(
@@ -227,10 +247,53 @@ class QdrantStore:
             results.append(self._point_to_result(str(point.id), float(point.score), payload))
 
         logger.debug(
-            "hybrid_search returned %d results (top_k=%d, book_ids=%s)",
+            "hybrid_search returned %d results (top_k=%d, book_ids=%s, levels=%s)",
             len(results),
             top_k,
             book_ids,
+            levels,
+        )
+        return results
+
+    def fetch_children(
+        self,
+        parent_ids: list[str],
+        limit_per_parent: int = 6,
+    ) -> list[SearchResult]:
+        """Fetch the child nodes of the given parent node ids.
+
+        Used by GLOBAL retrieval to drill from a kept chapter summary down into
+        its source passages, so the answer's citations land on real text. Scans
+        by the indexed ``parent_id`` payload key (no vector search). Returned
+        results carry ``score=0.0`` — the caller reranks them against the query.
+        """
+        if not parent_ids:
+            return []
+
+        from qdrant_client import models as qm
+
+        scroll_filter = qm.Filter(
+            must=[
+                qm.FieldCondition(
+                    key="parent_id", match=qm.MatchAny(any=list(parent_ids))
+                )
+            ]
+        )
+        limit = max(1, limit_per_parent * len(parent_ids))
+        points, _ = self.client.scroll(
+            collection_name=self.collection,
+            scroll_filter=scroll_filter,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        results = [
+            self._point_to_result(str(p.id), 0.0, p.payload or {}) for p in points
+        ]
+        logger.debug(
+            "fetch_children returned %d children for %d parent(s)",
+            len(results),
+            len(parent_ids),
         )
         return results
 
@@ -250,6 +313,9 @@ class QdrantStore:
             page_end=int(payload.get("page_end", 0)),
             chunk_index=int(payload.get("chunk_index", 0)),
             lang=payload.get("lang"),
+            level=payload.get("level", "passage"),       # default: pre-Phase-2 points
+            parent_id=payload.get("parent_id"),
+            chapter_title=payload.get("chapter_title"),
         )
 
     def count(self) -> int:

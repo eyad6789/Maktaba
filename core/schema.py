@@ -26,7 +26,11 @@ PAYLOAD_FIELDS = (
     "chunk_index",
     "lang",
     "token_count",
+    "level",            # "passage" | "chapter_summary" | "book_summary"
+    "parent_id",        # links a summary node to its parent (chapter -> book)
+    "chapter_title",    # section label for summary nodes
 )
 
-# Payload keys we create indexes on for fast filtering.
-INDEXED_PAYLOAD_KEYS = ("book_id", "lang")
+# Payload keys we create indexes on for fast filtering. `level` enables
+# level-routed retrieval; `parent_id` enables fetching a summary's children.
+INDEXED_PAYLOAD_KEYS = ("book_id", "lang", "level", "parent_id")

@@ -162,6 +162,42 @@ def _embed_chunks(
     return embeddings
 
 
+def _build_summary_nodes(
+    doc: "fitz.Document",
+    pages: list[PageContent],
+    chunks: list[Chunk],
+    book: BookMeta,
+    num_pages: int,
+) -> list[Chunk]:
+    """Build the comprehension layer (chapter + book summaries) for one book.
+
+    Detects structure from the PDF table of contents and summarizes with the
+    small ``summary_model``. Best-effort: any failure (no model server, etc.)
+    logs and returns ``[]`` so the book still ingests with its raw passages.
+    """
+    try:
+        from ingest import structure, summarize
+
+        toc = structure.extract_toc(doc)
+        sections = structure.detect_structure(pages, toc, num_pages)
+        nodes = summarize.build_summary_nodes(
+            sections, chunks, book, model=settings.summary_model
+        )
+        logger.info(
+            "Comprehension layer: %d summary node(s) for %s",
+            len(nodes),
+            book.book_id,
+        )
+        return nodes
+    except Exception as exc:  # noqa: BLE001 - comprehension is best-effort
+        logger.warning(
+            "Comprehension layer failed for %s: %s; ingesting passages only",
+            book.book_id,
+            exc,
+        )
+        return []
+
+
 def ingest_book(
     path: str | Path,
     *,
@@ -171,6 +207,7 @@ def ingest_book(
     ocr: "OCRBackend | None" = None,
     title: str | None = None,
     author: str | None = None,
+    force: bool = False,
 ) -> IngestStats:
     """Ingest a single PDF book end to end.
 
@@ -183,6 +220,10 @@ def ingest_book(
             scanned page is encountered and none is supplied.
         title: Optional human title; defaults to the file stem.
         author: Optional author.
+        force: Re-ingest even if this file was already ingested. Needed to
+            rebuild the comprehension layer over an existing corpus. Upserts are
+            idempotent (deterministic ids), so this overwrites rather than
+            duplicates.
 
     Returns:
         An :class:`IngestStats` describing the outcome. ``status`` is
@@ -192,7 +233,7 @@ def ingest_book(
     src = Path(path)
     file_hash = registry.compute_hash(src)
 
-    if registry.is_ingested(file_hash):
+    if not force and registry.is_ingested(file_hash):
         book_id = str(uuid.uuid5(NAMESPACE_URL, file_hash))
         logger.info("skipping already-ingested book: %s (%s)", src, book_id)
         return IngestStats(
@@ -261,11 +302,20 @@ def ingest_book(
             min_tokens=settings.chunk_min_tokens,
         )
 
+        # Build the hierarchical comprehension layer (chapter + book summaries)
+        # when enabled. Summary nodes are Chunks too, so they ride the same
+        # embed + upsert path and become retrievable alongside raw passages.
+        summary_nodes: list[Chunk] = []
+        if settings.enable_comprehension and chunks:
+            summary_nodes = _build_summary_nodes(doc, pages, chunks, book, num_pages)
+
         num_chunks = 0
         if chunks:
-            embeddings = _embed_chunks(embedder, chunks)
+            nodes = chunks + summary_nodes
+            embeddings = _embed_chunks(embedder, nodes)
             store.ensure_collection()
-            num_chunks = store.upsert_chunks(chunks, embeddings)
+            store.upsert_chunks(nodes, embeddings)
+            num_chunks = len(chunks)
         else:
             logger.warning(
                 "book %s produced no chunks (pages=%d, failed=%d)",
@@ -282,6 +332,7 @@ def ingest_book(
             scanned_pages=scanned_pages,
             failed_pages=failed_pages,
             num_chunks=num_chunks,
+            num_summary_nodes=len(summary_nodes),
             status="completed",
         )
         registry.mark_completed(stats)

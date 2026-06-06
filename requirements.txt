@@ -16,4 +16,6 @@ numpy>=1.26
 tqdm>=4.66
 langdetect>=1.0.9       # lightweight language detection (ar/en)
 FlagEmbedding>=1.2.10   # BGE-M3 embeddings + bge-reranker-v2-m3 (pulls torch)
+transformers>=4.49,<5   # pulled by FlagEmbedding; v5 removed the slow-tokenizer
+                        # `prepare_for_model` the reranker uses -> pin <5
 pytesseract>=0.3.10     # fallback OCR backend (needs system `tesseract` + ara/eng data)

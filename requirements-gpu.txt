@@ -3,7 +3,7 @@
 # Install a CUDA build of torch matching your driver first, e.g.:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu124
 torch>=2.3
-transformers>=4.49      # Qwen2.5-VL OCR backend + the local answer LLM (llm_backend=transformers)
+transformers>=4.49,<5   # Qwen2.5-VL OCR + transformers answer LLM; <5 for FlagEmbedding reranker compat
 accelerate>=0.30
 # High-throughput local LLM serving (alternative to in-process transformers):
 #   run a vLLM/Ollama OpenAI-compatible server and set LLM_BACKEND=openai

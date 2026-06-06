@@ -1,0 +1,76 @@
+# Production deployment for the Arabic/English book RAG system on a SHARED host.
+#
+# Design constraints (small VPS, co-located with other prod apps):
+#   * Hard RAM caps (mem_limit) so this stack can never OOM-kill neighbours;
+#     the box has a swap file, so memswap_limit gives the model loaders a little
+#     headroom beyond RAM instead of being killed outright.
+#   * Infra (Qdrant, Redis) is INTERNAL only (no host ports) to avoid clashing
+#     with the host's own redis on 6379. Only the API is published.
+#   * The ingestion worker also loads the heavy embedder, so it is gated behind
+#     the "ingest" profile and started on demand instead of running 24/7:
+#         docker compose -f deploy/compose.server.yml --profile ingest up -d worker
+#
+# Usage (from /opt/pdf-rag):
+#   docker compose -f deploy/compose.server.yml up -d --build qdrant redis api
+name: pdf-rag
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    mem_limit: 1g
+    memswap_limit: 1g
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 256m
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "200mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: pdf-rag:latest
+    restart: unless-stopped
+    env_file: [../.env]
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+      HF_HOME: /models
+    mem_limit: 4g
+    memswap_limit: 6g          # up to ~2g of swap headroom for model loading
+    ports:
+      - "127.0.0.1:8100:8000"  # internal only; public access via nginx :8085 (API key)
+    volumes:
+      - hf_cache:/models       # persist downloaded BGE-M3 + reranker weights
+      - appdata:/app/data      # books + ingestion registry (shared with worker)
+    depends_on: [qdrant, redis]
+
+  worker:
+    image: pdf-rag:latest
+    restart: unless-stopped
+    profiles: ["ingest"]       # started on demand, not by default (RAM budget)
+    env_file: [../.env]
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+      HF_HOME: /models
+    mem_limit: 3g
+    memswap_limit: 5g
+    volumes:
+      - hf_cache:/models
+      - appdata:/app/data
+    depends_on: [qdrant, redis]
+    command: ["python", "-m", "ingest.worker"]
+
+volumes:
+  qdrant_storage:
+  redis_data:
+  hf_cache:
+  appdata:

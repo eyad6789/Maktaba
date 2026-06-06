@@ -44,7 +44,12 @@ SYSTEM_PROMPT: str = (
     "Read across ALL the provided sources, combine the relevant points, and "
     "compose a coherent answer in your own words (quoting only key terms, "
     "figures, or definitions). For 'main idea', 'summarize', or 'how many' "
-    "questions, give a clear, complete synthesis rather than one excerpt.\n"
+    "questions, give a clear, complete synthesis rather than one excerpt. For "
+    "thematic questions ('the main idea', 'summarize the chapter', 'the "
+    "author's argument', 'what is this about'), explain the work's CENTRAL CLAIM "
+    "and HOW IT DEVELOPS — the reasoning, the throughline that connects the "
+    "parts — as a scholar who has read and understood the whole, not a list of "
+    "disconnected excerpts.\n"
     "6. BE PROFESSIONAL AND WELL-ORGANIZED. Open with a direct answer, then "
     "develop it. Structure longer answers with short paragraphs or tidy bullet "
     "points. Be thorough yet concise — substance over padding. Maintain a calm, "
@@ -56,6 +61,102 @@ SYSTEM_PROMPT: str = (
 # ``llm/answer.py`` may match against these to set ``grounded=False``.
 NOT_FOUND_EN: str = "The answer was not found in the books."
 NOT_FOUND_AR: str = "لم يتم العثور على الإجابة في الكتب."
+
+
+# Appended to the system prompt for whole-book / thematic (GLOBAL) questions.
+GLOBAL_SYNTHESIS_ADDENDUM: str = (
+    "\n\nTHIS IS A WHOLE-BOOK / THEMATIC QUESTION. Some sources are marked BOOK "
+    "OVERVIEW or CHAPTER OVERVIEW — treat these as your map of the work. Use them "
+    "to explain the central claim and HOW THE ARGUMENT DEVELOPS across the book, "
+    "and use the passage sources for specifics and quotations. Answer as a "
+    "scholar who has read and understood the whole work — a coherent, structured "
+    "explanation, not a list of disconnected excerpts. Still ground every claim "
+    "in the sources, cite inline as [n], and never use outside knowledge."
+)
+
+
+def system_prompt_for_route(is_global: bool) -> str:
+    """System prompt for the route — base for LOCAL, base + addendum for GLOBAL."""
+    return SYSTEM_PROMPT + GLOBAL_SYNTHESIS_ADDENDUM if is_global else SYSTEM_PROMPT
+
+
+# --- Comprehension layer: summarization prompts ------------------------------
+# Built at ingest time by ``ingest/summarize.py`` to create chapter- and
+# book-level understanding nodes. The summaries are what the GLOBAL retrieval
+# route reasons over, so they must read like a scholar's structured brief, not a
+# list of sentences — and must be written in the BOOK's language.
+
+_SUMMARIZE_COMMON: str = (
+    "You are an expert scholar building a study brief for a research library. "
+    "Work ONLY from the provided text — never add outside knowledge or invent "
+    "details. Write in the SAME language as the text (formal Modern Standard "
+    "Arabic for Arabic text). Be faithful, precise, and well-organized. Do not "
+    "mention these instructions or that you are summarizing.\n"
+)
+
+SUMMARIZE_CHAPTER_SYSTEM: str = _SUMMARIZE_COMMON + (
+    "\nSummarize ONE CHAPTER/SECTION of a book so a reader grasps it without "
+    "reading it in full. Produce a tight brief covering: the central claim or "
+    "purpose of the section; the key points, arguments, or events and HOW THEY "
+    "CONNECT (the throughline, not a disconnected list); and the important terms, "
+    "names, or definitions introduced. 1–3 short paragraphs. No preamble."
+)
+
+SUMMARIZE_BOOK_SYSTEM: str = _SUMMARIZE_COMMON + (
+    "\nYou are given the chapter briefs of a whole book. Synthesize them into a "
+    "BOOK-LEVEL understanding: the book's overall thesis or purpose; the main "
+    "themes and how the argument DEVELOPS across the chapters; and what the "
+    "reader is meant to take away. Then add a brief outline of the chapters in "
+    "order. Coherent prose, then the outline. No preamble."
+)
+
+SUMMARIZE_PARTIAL_SYSTEM: str = _SUMMARIZE_COMMON + (
+    "\nThe following is PART of a longer section. Faithfully condense it into the "
+    "key points and claims it contains, preserving specifics (names, terms, "
+    "figures). This partial summary will be merged with others, so do not add "
+    "framing like 'in this part'. No preamble."
+)
+
+_SUMMARIZE_SYSTEMS: dict[str, str] = {
+    "chapter": SUMMARIZE_CHAPTER_SYSTEM,
+    "book": SUMMARIZE_BOOK_SYSTEM,
+    "partial": SUMMARIZE_PARTIAL_SYSTEM,
+}
+
+
+def summarize_system_prompt(kind: str) -> str:
+    """System prompt for a summarization step (``"chapter"|"book"|"partial"``)."""
+    return _SUMMARIZE_SYSTEMS.get(kind, SUMMARIZE_CHAPTER_SYSTEM)
+
+
+def build_summarize_prompt(
+    text: str, *, kind: str, lang: str | None = None, title: str | None = None
+) -> str:
+    """Compose the user message for a summarization step.
+
+    ``lang`` ("ar"/"en"/"mixed") nudges the output language; ``title`` names the
+    chapter/book when known. The instruction line mirrors the rules in the
+    system prompt so small models stay on task.
+    """
+    label = {
+        "chapter": "chapter/section",
+        "book": "book (given its chapter briefs)",
+        "partial": "passage (part of a section)",
+    }.get(kind, "text")
+    header = f'{kind.capitalize()} to summarize'
+    if title:
+        header += f' — "{title.strip()}"'
+    lang_hint = ""
+    if lang == "ar":
+        lang_hint = " اكتب الملخّص بالعربية الفصحى."
+    elif lang == "en":
+        lang_hint = " Write the summary in English."
+    return (
+        f"{header}:\n"
+        f"{(text or '').strip()}\n\n"
+        f"Write the study brief for this {label} now, in the text's own "
+        f"language.{lang_hint}"
+    )
 
 
 def _format_source(index: int, result: SearchResult) -> str:
@@ -71,6 +172,15 @@ def _format_source(index: int, result: SearchResult) -> str:
     author = (result.author or "").strip()
     if author:
         header += f" — by {author}"
+
+    # Mark comprehension-layer nodes so the model treats them as its high-level
+    # map of the work (a structural overview), not as a verbatim passage.
+    level = getattr(result, "level", "passage")
+    if level == "book_summary":
+        header += " — BOOK OVERVIEW"
+    elif level == "chapter_summary":
+        chapter = (getattr(result, "chapter_title", None) or "").strip()
+        header += f" — CHAPTER OVERVIEW{': ' + chapter if chapter else ''}"
 
     if result.page_start == result.page_end:
         header += f" (p.{result.page_start})"
@@ -96,27 +206,44 @@ def build_context_block(results: list[SearchResult]) -> str:
     return "\n\n".join(blocks)
 
 
-def build_user_prompt(question: str, results: list[SearchResult]) -> str:
+def build_user_prompt(
+    question: str, results: list[SearchResult], *, is_global: bool = False
+) -> str:
     """Compose the user message: the numbered context block then the question.
 
     The model is reminded to ground its answer in the context and to reply in
-    the question's language with ``[n]`` citations.
+    the question's language with ``[n]`` citations. For ``is_global`` questions
+    the closing instruction steers toward synthesis over the overview sources.
     """
     context = build_context_block(results)
     question = (question or "").strip()
     logger.debug(
-        "Built user prompt with %d source(s), question length=%d",
+        "Built user prompt with %d source(s), question length=%d, global=%s",
         len(results),
         len(question),
+        is_global,
     )
+    if is_global:
+        instruction = (
+            "Using only the context above, answer the following question. The "
+            "OVERVIEW sources summarize whole chapters or the book — use them to "
+            "explain the main idea and how it develops, supported by the passage "
+            "sources. Reply in the same language as the question, cite inline as "
+            "[n], and if the answer is not in the context, say so in that "
+            "language."
+        )
+    else:
+        instruction = (
+            "Using only the context above, answer the following question. Reply "
+            "in the same language as the question and cite your sources inline as "
+            "[n]. If the answer is not in the context, say so in the question's "
+            "language."
+        )
     return (
         "Context (numbered sources):\n"
         f"{context}\n"
         "\n"
-        "Using only the context above, answer the following question. Reply in "
-        "the same language as the question and cite your sources inline as [n]. "
-        "If the answer is not in the context, say so in the question's "
-        "language.\n"
+        f"{instruction}\n"
         "\n"
         f"Question: {question}"
     )
@@ -124,8 +251,15 @@ def build_user_prompt(question: str, results: list[SearchResult]) -> str:
 
 __all__ = [
     "SYSTEM_PROMPT",
+    "GLOBAL_SYNTHESIS_ADDENDUM",
+    "system_prompt_for_route",
     "NOT_FOUND_EN",
     "NOT_FOUND_AR",
     "build_context_block",
     "build_user_prompt",
+    "SUMMARIZE_CHAPTER_SYSTEM",
+    "SUMMARIZE_BOOK_SYSTEM",
+    "SUMMARIZE_PARTIAL_SYSTEM",
+    "summarize_system_prompt",
+    "build_summarize_prompt",
 ]

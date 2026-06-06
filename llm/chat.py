@@ -19,7 +19,8 @@ from core.logging import get_logger
 from core.models import Answer, SearchResult
 from llm import engine
 from llm.answer import _looks_not_found, _map_citations, _parse_citation_indices
-from llm.prompts import SYSTEM_PROMPT, build_user_prompt
+from llm.prompts import build_user_prompt, system_prompt_for_route
+from retrieval.route import Route
 
 logger = get_logger(__name__)
 
@@ -30,12 +31,16 @@ _CONDENSE_SYSTEM = (
     "the query text — no quotes, no explanation, no label."
 )
 
-_CHAT_SYSTEM = (
-    SYSTEM_PROMPT
-    + "\nThis is a multi-turn conversation. Use the earlier turns only to "
+_CHAT_TURN_RULE = (
+    "\nThis is a multi-turn conversation. Use the earlier turns only to "
     "understand the user's intent; ground every factual claim in the numbered "
     "context provided with the latest question."
 )
+
+
+def _chat_system(is_global: bool) -> str:
+    """Route-appropriate system prompt with the multi-turn grounding rule."""
+    return system_prompt_for_route(is_global) + _CHAT_TURN_RULE
 
 
 def _user_turns(messages: list[dict]) -> list[dict]:
@@ -91,6 +96,7 @@ def chat_answer(
     results: list[SearchResult],
     *,
     model: str | None = None,
+    route: Route = Route.LOCAL,
 ) -> Answer:
     """Answer the latest user message grounded in ``results``, with history."""
     chosen_model = model or engine.active_model_name()
@@ -107,7 +113,8 @@ def chat_answer(
             grounded=False,
         )
 
-    grounded_prompt = build_user_prompt(latest, results)
+    is_global = route == Route.GLOBAL
+    grounded_prompt = build_user_prompt(latest, results, is_global=is_global)
     api_messages: list[dict] = []
     replaced_last_user = False
     for i in range(len(messages) - 1, -1, -1):
@@ -119,8 +126,19 @@ def chat_answer(
         api_messages.append({"role": m.get("role"), "content": content})
     api_messages.reverse()
 
-    logger.info("Chat answering with %s over %d source(s)", chosen_model, len(results))
-    answer_text = engine.complete(_CHAT_SYSTEM, api_messages, model=model)
+    logger.info(
+        "Chat answering with %s over %d source(s), route=%s",
+        chosen_model,
+        len(results),
+        route.value,
+    )
+    answer_text = engine.complete(
+        _chat_system(is_global),
+        api_messages,
+        model=model,
+        max_tokens=settings.answer_max_tokens_global if is_global else None,
+        temperature=settings.answer_temperature_global if is_global else None,
+    )
 
     cited = _parse_citation_indices(answer_text)
     citations = _map_citations(cited, results)

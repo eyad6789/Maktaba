@@ -14,7 +14,8 @@ from config import settings
 from core.logging import get_logger
 from core.models import Answer, Citation, SearchResult
 from llm import engine
-from llm.prompts import SYSTEM_PROMPT, build_user_prompt
+from llm.prompts import build_user_prompt, system_prompt_for_route
+from retrieval.route import Route
 
 logger = get_logger(__name__)
 
@@ -97,13 +98,16 @@ def answer_question(
     results: list[SearchResult],
     *,
     model: str | None = None,
+    route: Route = Route.LOCAL,
 ) -> Answer:
     """Answer ``question`` grounded in ``results`` using the local LLM engine.
 
-    Sends ``SYSTEM_PROMPT`` plus the numbered context as a single user turn and
-    parses ``[n]`` markers in the reply back to the source chunks. ``grounded``
-    is ``False`` only when the model produced no valid citations *and* its reply
-    matches the "not found in the books" phrasing.
+    Sends the route-appropriate system prompt plus the numbered context as a
+    single user turn and parses ``[n]`` markers in the reply back to the source
+    chunks. GLOBAL (whole-book/thematic) questions get a synthesis-oriented
+    prompt and more generation headroom; LOCAL stays tight and low-temperature.
+    ``grounded`` is ``False`` only when the model produced no valid citations
+    *and* its reply matches the "not found in the books" phrasing.
     """
     chosen_model = model or engine.active_model_name()
 
@@ -117,12 +121,21 @@ def answer_question(
             grounded=False,
         )
 
-    user_prompt = build_user_prompt(question, results)
-    logger.info("Answering with %s over %d source(s)", chosen_model, len(results))
+    is_global = route == Route.GLOBAL
+    system = system_prompt_for_route(is_global)
+    user_prompt = build_user_prompt(question, results, is_global=is_global)
+    logger.info(
+        "Answering with %s over %d source(s), route=%s",
+        chosen_model,
+        len(results),
+        route.value,
+    )
     answer_text = engine.complete(
-        SYSTEM_PROMPT,
+        system,
         [{"role": "user", "content": user_prompt}],
         model=model,
+        max_tokens=settings.answer_max_tokens_global if is_global else None,
+        temperature=settings.answer_temperature_global if is_global else None,
     )
 
     cited_numbers = _parse_citation_indices(answer_text)

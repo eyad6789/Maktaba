@@ -29,7 +29,11 @@ _lock = threading.Lock()
 
 
 def active_model_name() -> str:
-    """Human-readable name of the model the active backend will use."""
+    """Human-readable name of the model the active backend will use.
+
+    For the fallback chain this is the *preferred* (first available) provider's
+    model; the actual answer may come from a later provider if earlier ones fail.
+    """
     backend = settings.llm_backend
     if backend == "transformers":
         return settings.local_llm_model
@@ -37,6 +41,16 @@ def active_model_name() -> str:
         return settings.openai_model
     if backend == "anthropic":
         return settings.answer_model
+    if backend == "fallback":
+        if settings.minimax_api_key:
+            return settings.minimax_model
+        if settings.gemini_api_key:
+            return settings.gemini_model
+        if settings.groq_api_key:
+            return settings.groq_model
+        if settings.anthropic_api_key:
+            return settings.answer_model
+        return settings.openai_model
     return backend
 
 
@@ -101,23 +115,42 @@ class TransformersLLM:
 
 
 class OpenAICompatibleLLM:
-    """A local OpenAI-compatible server (vLLM / Ollama / LM Studio)."""
+    """An OpenAI-compatible chat endpoint.
 
-    def __init__(self) -> None:
+    Defaults to the local server (Ollama / vLLM / LM Studio) from ``settings``,
+    but ``base_url``/``api_key``/``model`` can be supplied so the same class can
+    drive a cloud provider (MiniMax, Gemini) inside :class:`FallbackLLM`.
+    """
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+        name: str = "openai",
+        timeout: float | None = None,
+    ) -> None:
+        self._base_url = base_url or settings.openai_base_url
+        self._api_key = api_key or settings.openai_api_key
+        self._model = model or settings.openai_model
+        self._timeout = timeout
+        self.name = name
         self._client: Any = None
 
     def _client_or_load(self) -> Any:
         if self._client is None:
             from openai import OpenAI  # lazy
 
-            logger.info("Using OpenAI-compatible endpoint %s", settings.openai_base_url)
-            self._client = OpenAI(base_url=settings.openai_base_url, api_key=settings.openai_api_key)
+            logger.info("Using OpenAI-compatible endpoint %s (%s)", self._base_url, self.name)
+            self._client = OpenAI(
+                base_url=self._base_url, api_key=self._api_key, timeout=self._timeout
+            )
         return self._client
 
     def complete(self, system: str, messages: list[dict], *, model: str | None, max_tokens: int, temperature: float) -> str:
         client = self._client_or_load()
         resp = client.chat.completions.create(
-            model=model or settings.openai_model,
+            model=model or self._model,
             messages=[{"role": "system", "content": system}] + list(messages),
             max_tokens=max_tokens,
             temperature=temperature,
@@ -125,17 +158,98 @@ class OpenAICompatibleLLM:
         return (resp.choices[0].message.content or "").strip()
 
 
-class AnthropicLLM:
-    """Claude cloud API (opt-in). Requires ANTHROPIC_API_KEY + network."""
+class FallbackLLM:
+    """Try cloud providers in order, then the local model (the offline guarantee).
+
+    Chain: MiniMax -> Gemini -> local Ollama. A cloud provider is included only
+    when its API key is set, and any error (bad key, network, incompatible
+    response) is caught so the next provider is tried. The local model is always
+    last, so answering never fully fails as long as Ollama is up.
+
+    An explicit per-call ``model`` (used for cheap utility calls: condensation,
+    routing, summarization) names a LOCAL model, so it is sent straight to the
+    local provider and never burns cloud quota.
+    """
 
     def __init__(self) -> None:
+        self._providers: list[OpenAICompatibleLLM] | None = None
+
+    def _build(self) -> list["OpenAICompatibleLLM"]:
+        if self._providers is not None:
+            return self._providers
+        providers: list[OpenAICompatibleLLM] = []
+        if settings.minimax_api_key:
+            providers.append(OpenAICompatibleLLM(
+                base_url=settings.minimax_base_url, api_key=settings.minimax_api_key,
+                model=settings.minimax_model, name="minimax", timeout=settings.cloud_llm_timeout,
+            ))
+        if settings.gemini_api_key:
+            providers.append(OpenAICompatibleLLM(
+                base_url=settings.gemini_base_url, api_key=settings.gemini_api_key,
+                model=settings.gemini_model, name="gemini", timeout=settings.cloud_llm_timeout,
+            ))
+        if settings.groq_api_key:
+            providers.append(OpenAICompatibleLLM(
+                base_url=settings.groq_base_url, api_key=settings.groq_api_key,
+                model=settings.groq_model, name="groq", timeout=settings.cloud_llm_timeout,
+            ))
+        # Claude (cloud) sits after the other cloud providers and before the local
+        # model — e.g. Gemini primary, Claude as fallback if Gemini fails.
+        if settings.anthropic_api_key:
+            providers.append(AnthropicLLM(name="anthropic", timeout=settings.cloud_llm_timeout))
+        providers.append(OpenAICompatibleLLM(
+            base_url=settings.openai_base_url, api_key=settings.openai_api_key,
+            model=settings.openai_model, name="local-ollama", timeout=settings.local_llm_timeout,
+        ))
+        self._providers = providers
+        logger.info("LLM fallback chain: %s", " -> ".join(p.name for p in providers))
+        return providers
+
+    def complete(self, system: str, messages: list[dict], *, model: str | None, max_tokens: int, temperature: float) -> str:
+        providers = self._build()
+
+        # An explicit model override names a LOCAL model — go straight local.
+        if model is not None:
+            return providers[-1].complete(
+                system, messages, model=model, max_tokens=max_tokens, temperature=temperature
+            )
+
+        errors: list[str] = []
+        for provider in providers:
+            try:
+                out = provider.complete(
+                    system, messages, model=None, max_tokens=max_tokens, temperature=temperature
+                )
+                if out and out.strip():
+                    if errors:
+                        logger.info(
+                            "Answered via %s after %d provider(s) failed", provider.name, len(errors)
+                        )
+                    return out
+                errors.append(f"{provider.name}: empty response")
+            except Exception as exc:  # noqa: BLE001 - try the next provider
+                logger.warning("LLM provider %s failed (%s); trying next", provider.name, exc)
+                errors.append(f"{provider.name}: {exc}")
+        raise RuntimeError("All LLM providers failed: " + "; ".join(errors))
+
+
+class AnthropicLLM:
+    """Claude cloud API. Used as the configured backend (``llm_backend=anthropic``)
+    or as a link in the :class:`FallbackLLM` chain. Requires ANTHROPIC_API_KEY."""
+
+    def __init__(self, name: str = "anthropic", timeout: float | None = None) -> None:
+        self.name = name
+        self._timeout = timeout
         self._client: Any = None
 
     def _client_or_load(self) -> Any:
         if self._client is None:
             import anthropic  # lazy
 
-            self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            kwargs: dict[str, Any] = {"api_key": settings.anthropic_api_key}
+            if self._timeout is not None:
+                kwargs["timeout"] = self._timeout
+            self._client = anthropic.Anthropic(**kwargs)
         return self._client
 
     def complete(self, system: str, messages: list[dict], *, model: str | None, max_tokens: int, temperature: float) -> str:
@@ -161,6 +275,7 @@ _BACKENDS = {
     "transformers": TransformersLLM,
     "openai": OpenAICompatibleLLM,
     "anthropic": AnthropicLLM,
+    "fallback": FallbackLLM,
 }
 
 

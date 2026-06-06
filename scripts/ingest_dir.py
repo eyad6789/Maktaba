@@ -54,7 +54,7 @@ def find_pdfs(directory: Path, *, recursive: bool = True) -> list[Path]:
     return sorted(set(pdfs))
 
 
-def _ingest_sync(pdfs: list[Path]) -> int:
+def _ingest_sync(pdfs: list[Path], *, force: bool = False) -> int:
     """Ingest each PDF inline, printing per-book stats. Return exit code."""
     # Lazy imports: these pull in heavy backends (torch/transformers/qdrant).
     from ingest.embed import BGEM3Embedder
@@ -90,6 +90,7 @@ def _ingest_sync(pdfs: list[Path]) -> int:
             embedder=embedder,
             registry=registry,
             ocr=ocr,
+            force=force,
         )
         if stats.status == "failed":
             had_failure = True
@@ -98,12 +99,12 @@ def _ingest_sync(pdfs: list[Path]) -> int:
     return 1 if had_failure else 0
 
 
-def _ingest_enqueue(pdfs: list[Path]) -> int:
+def _ingest_enqueue(pdfs: list[Path], *, force: bool = False) -> int:
     """Enqueue each PDF for asynchronous ingestion. Return exit code."""
     from ingest.worker import enqueue_book
 
     for index, pdf in enumerate(pdfs, start=1):
-        job_id = enqueue_book(str(pdf))
+        job_id = enqueue_book(str(pdf), force=force)
         print(f"[{index}/{len(pdfs)}] enqueued {pdf} -> job {job_id}")
     return 0
 
@@ -136,6 +137,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run ingestion inline instead of enqueuing jobs.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-ingest already-ingested books (e.g. to rebuild the "
+        "comprehension layer after enabling ENABLE_COMPREHENSION).",
+    )
     args = parser.parse_args(argv)
 
     directory = Path(args.dir).expanduser()
@@ -154,12 +161,12 @@ def main(argv: list[str] | None = None) -> int:
     mode = "sync" if args.sync else "enqueue"
     print(
         f"Found {len(pdfs)} PDF file(s) under {directory} "
-        f"(recursive={args.recursive}); mode={mode}"
+        f"(recursive={args.recursive}); mode={mode}; force={args.force}"
     )
 
     if args.sync:
-        return _ingest_sync(pdfs)
-    return _ingest_enqueue(pdfs)
+        return _ingest_sync(pdfs, force=args.force)
+    return _ingest_enqueue(pdfs, force=args.force)
 
 
 if __name__ == "__main__":

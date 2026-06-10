@@ -158,9 +158,24 @@ curl -s localhost:8000/query -H 'content-type: application/json' \
 ### 💬 Chat with your library
 
 Once the API is running, open **http://localhost:8000** in a browser — a
-bilingual (Arabic RTL / English LTR) chat UI is served there. It's multi-turn,
-shows the page-level sources behind each answer, and reports when something
-isn't in the books.
+ChatGPT-style bilingual (Arabic RTL / English LTR) web app is served there:
+
+- **Streaming answers** (SSE) with inline `[n]` citations and the page-level
+  sources shown *before* generation starts.
+- **Conversations sidebar** — chats are persisted server-side (SQLite) and
+  survive reloads; every conversation has a shareable URL (`/c/<id>`).
+- **Model picker** — *Auto* (Gemini → Claude → Local fallback) or pin one
+  model. A pinned model that hits its rate limit does **not** silently fall
+  back; the UI says so and offers to switch to Auto.
+- **Book scope picker** — ask across all books, one book, or any subset.
+- **Library dashboard** at **/dashboard** — upload PDFs from the browser,
+  watch vectorization progress live (queued → reading pages → embedding →
+  indexing), see book/passage totals, and delete books.
+
+The SPA lives in `web/` (React + Vite) and builds into `api/static/dist`
+(`make web-build`); without a build the legacy single-file UI is served, so
+the API works with no Node installed. For SPA development run `make api` and
+`make web-dev` (Vite proxies API calls to :8000).
 
 Prefer the terminal?
 ```bash
@@ -179,6 +194,18 @@ curl -s localhost:8000/chat -H 'content-type: application/json' -d '{
     {"role": "user", "content": "and how does that relate to law?"}
   ]
 }' | jq
+```
+
+The full HTTP surface on top of `/query` and `/chat`:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /models` | Providers for the model picker (Auto + chain, availability) |
+| `POST /chat/stream` | One chat turn as SSE (`meta` → `provider` → `delta`* → `done`/`error`); history kept server-side |
+| `GET/POST /conversations`, `GET/PATCH/DELETE /conversations/{id}` | Persisted conversation CRUD |
+| `POST /upload` | Browser PDF upload (multipart, 200 MB cap) → enqueue ingestion |
+| `GET /jobs`, `GET /jobs/{id}` | Live ingestion progress (stage + page counts from RQ job meta) |
+| `GET /books`, `DELETE /books/{id}` | Library listing/totals; remove a book's vectors + registry row |
 
 **Evaluate** retrieval quality:
 ```bash

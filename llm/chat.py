@@ -18,7 +18,7 @@ from config import settings
 from core.logging import get_logger
 from core.models import Answer, SearchResult
 from llm import engine
-from llm.answer import _looks_not_found, _map_citations, _parse_citation_indices
+from llm.answer import extract_citations
 from llm.prompts import build_user_prompt, system_prompt_for_route
 from retrieval.route import Route
 
@@ -91,17 +91,48 @@ def condense_query(messages: list[dict], *, model: str | None = None) -> str:
     return latest
 
 
+def build_chat_messages(
+    messages: list[dict], results: list[SearchResult], route: Route
+) -> tuple[str, list[dict]]:
+    """Build the (system, api_messages) pair for a grounded chat completion.
+
+    The last user turn is replaced with the full grounded prompt (numbered
+    context + question); every earlier turn is passed through verbatim and in
+    order, so the model keeps the conversation while grounding the new answer.
+    Shared by :func:`chat_answer` and the streaming endpoint.
+    """
+    is_global = route == Route.GLOBAL
+    users = _user_turns(messages)
+    latest = ((users[-1].get("content") if users else "") or "").strip()
+    grounded_prompt = build_user_prompt(latest, results, is_global=is_global)
+
+    api_messages: list[dict] = []
+    replaced_last_user = False
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        content = m.get("content") or ""
+        if m.get("role") == "user" and not replaced_last_user:
+            content = grounded_prompt
+            replaced_last_user = True
+        api_messages.append({"role": m.get("role"), "content": content})
+    api_messages.reverse()
+    return _chat_system(is_global), api_messages
+
+
 def chat_answer(
     messages: list[dict],
     results: list[SearchResult],
     *,
     model: str | None = None,
     route: Route = Route.LOCAL,
+    provider: str | None = None,
 ) -> Answer:
-    """Answer the latest user message grounded in ``results``, with history."""
+    """Answer the latest user message grounded in ``results``, with history.
+
+    ``provider`` pins one provider; its failures raise
+    :class:`~llm.errors.ProviderError`, which propagates (no silent fallback).
+    """
     chosen_model = model or engine.active_model_name()
-    users = _user_turns(messages)
-    latest = ((users[-1].get("content") if users else "") or "").strip()
 
     if not results:
         logger.info("No retrieval results for chat; returning ungrounded answer")
@@ -114,17 +145,7 @@ def chat_answer(
         )
 
     is_global = route == Route.GLOBAL
-    grounded_prompt = build_user_prompt(latest, results, is_global=is_global)
-    api_messages: list[dict] = []
-    replaced_last_user = False
-    for i in range(len(messages) - 1, -1, -1):
-        m = messages[i]
-        content = m.get("content") or ""
-        if m.get("role") == "user" and not replaced_last_user:
-            content = grounded_prompt
-            replaced_last_user = True
-        api_messages.append({"role": m.get("role"), "content": content})
-    api_messages.reverse()
+    system, api_messages = build_chat_messages(messages, results, route)
 
     logger.info(
         "Chat answering with %s over %d source(s), route=%s",
@@ -132,22 +153,22 @@ def chat_answer(
         len(results),
         route.value,
     )
-    answer_text = engine.complete(
-        _chat_system(is_global),
+    result = engine.generate(
+        system,
         api_messages,
+        provider=provider,
         model=model,
         max_tokens=settings.answer_max_tokens_global if is_global else None,
         temperature=settings.answer_temperature_global if is_global else None,
     )
 
-    cited = _parse_citation_indices(answer_text)
-    citations = _map_citations(cited, results)
-    grounded = bool(citations) or not _looks_not_found(answer_text)
+    citations, grounded = extract_citations(result.text, results)
 
     return Answer(
-        answer=answer_text,
+        answer=result.text,
         citations=citations,
         sources=results,
-        model=chosen_model,
+        model=result.model or chosen_model,
         grounded=grounded,
+        provider=result.provider,
     )

@@ -12,6 +12,7 @@ Run:  .venv/bin/python -m tests.integration.run_e2e
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import traceback
@@ -27,7 +28,14 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 os.environ.setdefault("OCR_BACKEND", "tesseract")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6380/0")
 os.environ.setdefault("REGISTRY_DB", str(_TMP / "registry.db"))
+os.environ.setdefault("CONVERSATIONS_DB", str(_TMP / "conversations.db"))
+os.environ.setdefault("UPLOADS_DIR", str(_TMP / "uploads"))
 os.environ.setdefault("LOG_LEVEL", "WARNING")
+# Pin comprehension OFF regardless of the developer's .env (env vars beat the
+# dotenv file): with it on, every ingest builds summary nodes via the REAL LLM
+# engine before the fakes are installed, breaking determinism (and the
+# comprehension test, which expects to be the only book with summary nodes).
+os.environ.setdefault("ENABLE_COMPREHENSION", "false")
 
 from config import settings  # noqa: E402
 from core.models import BookMeta, PageContent, PageKind  # noqa: E402
@@ -42,6 +50,8 @@ from tests.integration.helpers import (  # noqa: E402
     FakeOCR,
     FakeReranker,
     install_fake_llm,
+    install_fake_llm_stream,
+    install_fake_llm_stream_rate_limited,
     make_native_pdf,
     make_scanned_pdf,
 )
@@ -62,6 +72,12 @@ OCR_TEXT = (
     "العدالة القانون المجتمع الحوكمة المساواة. "
     "This simulated scanned page discusses governance and society."
 )
+CHEMISTRY = (
+    "Chemistry studies atoms, molecules, and chemical reactions. Acids and "
+    "bases neutralize each other in solution. The periodic table organizes "
+    "the chemical elements by atomic number, and chemical bonds hold the "
+    "molecules of every compound together during reactions."
+)
 
 _PDF_JUSTICE = _TMP / "justice.pdf"
 _PDF_ASTRO = _TMP / "astronomy.pdf"
@@ -77,19 +93,50 @@ def _store() -> QdrantStore:
 
 
 def setup() -> None:
-    """Reset Qdrant test collection + registry, regenerate sample PDFs."""
+    """Reset Qdrant test collection + SQLite DBs + uploads, regenerate PDFs."""
     from qdrant_client import QdrantClient
 
     client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
     if client.collection_exists(settings.qdrant_collection):
         client.delete_collection(settings.qdrant_collection)
-    reg = Path(settings.registry_db)
-    if reg.exists():
-        reg.unlink()
+    # Both SQLite stores are isolated to the temp dir (REGISTRY_DB /
+    # CONVERSATIONS_DB env vars above); wipe them plus their WAL sidecars.
+    for db in (Path(settings.registry_db), Path(settings.conversations_db)):
+        for suffix in ("", "-wal", "-shm"):
+            sidecar = Path(str(db) + suffix)
+            if sidecar.exists():
+                sidecar.unlink()
+    # Uploads land in the temp dir too (UPLOADS_DIR env var above).
+    uploads = Path(settings.uploads_dir)
+    if uploads.is_dir():
+        for leftover in uploads.iterdir():
+            if leftover.is_file():
+                leftover.unlink()
 
     make_native_pdf(_PDF_JUSTICE, [JUSTICE])
     make_native_pdf(_PDF_ASTRO, [ASTRONOMY])
     make_scanned_pdf(_PDF_SCANNED)
+
+
+def _parse_sse(body: str) -> list[tuple[str, dict]]:
+    """Parse an SSE body into ordered ``(event, data)`` pairs.
+
+    Frames are separated by a blank line; each carries one ``event:`` line and
+    one single-line JSON ``data:`` payload (see ``core/sse.py``).
+    """
+    events: list[tuple[str, dict]] = []
+    for frame in body.split("\n\n"):
+        if not frame.strip():
+            continue
+        event, data = None, None
+        for line in frame.splitlines():
+            if line.startswith("event: "):
+                event = line[len("event: "):]
+            elif line.startswith("data: "):
+                data = json.loads(line[len("data: "):])
+        assert event is not None and data is not None, f"malformed SSE frame: {frame!r}"
+        events.append((event, data))
+    return events
 
 
 # --- tests ------------------------------------------------------------------
@@ -348,6 +395,231 @@ def test_comprehension_layer_and_global_route():
         assert levels & {"book_summary", "chapter_summary"}, body["sources"]
 
 
+def test_models_endpoint():
+    """GET /models lists Auto (with its chain) plus every provider's row."""
+    import ingest.embed as embed_mod
+    import retrieval.rerank as rerank_mod
+
+    embed_mod.BGEM3Embedder = FakeEmbedder
+    rerank_mod.Reranker = FakeReranker
+
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    with TestClient(app) as client:
+        r = client.get("/models")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["default"] == "auto", body
+        providers = body["providers"]
+        assert providers and providers[0]["id"] == "auto", providers
+        assert isinstance(providers[0]["chain"], list) and providers[0]["chain"], providers[0]
+        for p in providers:
+            for key in ("id", "label", "model", "available"):
+                assert key in p, f"provider row missing {key!r}: {p}"
+
+
+def test_upload_ingest_books_jobs_delete():
+    """Dashboard round-trip: upload -> (sync) ingest -> list -> dedup -> delete."""
+    import ingest.embed as embed_mod
+    import retrieval.rerank as rerank_mod
+
+    embed_mod.BGEM3Embedder = FakeEmbedder
+    rerank_mod.Reranker = FakeReranker
+    install_fake_llm("Chemistry studies atoms and molecules [1].")
+
+    from fastapi.testclient import TestClient
+    from api.main import app
+    from ingest.worker import ingest_book_job
+
+    pdf = _TMP / "chemistry.pdf"
+    make_native_pdf(pdf, [CHEMISTRY])
+    pdf_bytes = pdf.read_bytes()
+
+    with TestClient(app) as client:
+        baseline_chunks = _store().count()
+
+        # Multipart upload -> streamed to uploads_dir, hashed, enqueued on RQ.
+        r = client.post(
+            "/upload",
+            files={"file": ("chemistry.pdf", pdf_bytes, "application/pdf")},
+            data={"title": "Chemistry"},
+        )
+        assert r.status_code == 200, r.text
+        up = r.json()
+        assert up["status"] == "queued", up
+        assert up["job_id"] and up["book_id"], up
+        assert up["size_bytes"] == len(pdf_bytes), up
+        saved = Path(settings.uploads_dir) / up["filename"]
+        assert saved.is_file(), f"upload not saved at {saved}"
+
+        # Simulate the worker: run the job function synchronously (no RQ worker
+        # in this suite); the fakes installed above stand in for GPU pieces.
+        stats = ingest_book_job(str(saved), title="Chemistry")
+        assert stats["status"] == "completed" and stats["num_chunks"] >= 1, stats
+        assert stats["book_id"] == up["book_id"], (stats["book_id"], up["book_id"])
+
+        # The book shows up completed with consistent corpus totals.
+        books = client.get("/books")
+        assert books.status_code == 200, books.text
+        bb = books.json()
+        row = next((b for b in bb["books"] if b["book_id"] == up["book_id"]), None)
+        assert row is not None, bb
+        assert row["status"] == "completed" and row["num_chunks"] >= 1, row
+        assert bb["total_books"] == len(bb["books"]), bb
+        assert bb["total_chunks"] == _store().count() > baseline_chunks, bb
+
+        # Job polling: the real worker never ran, so only assert the shape.
+        j = client.get(f"/jobs/{up['job_id']}")
+        assert j.status_code == 200, j.text
+        jb = j.json()
+        assert jb["job_id"] == up["job_id"], jb
+        assert jb["state"] in {"queued", "started", "finished", "failed", "not_found"}, jb
+
+        # Re-uploading identical bytes is caught by content hash.
+        r2 = client.post(
+            "/upload",
+            files={"file": ("chemistry.pdf", pdf_bytes, "application/pdf")},
+            data={"title": "Chemistry"},
+        )
+        assert r2.status_code == 200, r2.text
+        dup = r2.json()
+        assert dup["status"] == "duplicate" and dup["book_id"] == up["book_id"], dup
+
+        # Delete removes vectors, the registry row, and the uploaded file.
+        d = client.delete(f"/books/{up['book_id']}")
+        assert d.status_code == 200, d.text
+        assert d.json()["deleted"] is True, d.text
+        after = client.get("/books").json()
+        assert up["book_id"] not in {b["book_id"] for b in after["books"]}, after
+        assert _store().count() == baseline_chunks, "Qdrant count did not drop back"
+        assert not saved.exists(), "uploaded source file not removed on delete"
+
+
+def test_conversations_crud():
+    """POST -> list -> PATCH rename -> GET detail -> DELETE -> 404."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/conversations", json={"title": "My research", "model": "auto"})
+        assert r.status_code == 201, r.text
+        conv = r.json()
+        conv_id = conv["id"]
+        assert conv_id and conv["title"] == "My research", conv
+        assert conv["message_count"] == 0, conv
+
+        listed = client.get("/conversations").json()["conversations"]
+        assert conv_id in {c["id"] for c in listed}, listed
+
+        p = client.patch(f"/conversations/{conv_id}", json={"title": "Renamed"})
+        assert p.status_code == 200, p.text
+        assert p.json()["title"] == "Renamed", p.text
+
+        g = client.get(f"/conversations/{conv_id}")
+        assert g.status_code == 200, g.text
+        detail = g.json()
+        assert detail["title"] == "Renamed" and detail["messages"] == [], detail
+
+        d = client.delete(f"/conversations/{conv_id}")
+        assert d.status_code == 200 and d.json() == {"deleted": True}, d.text
+        assert client.get(f"/conversations/{conv_id}").status_code == 404
+
+
+def test_chat_stream_happy_path():
+    """POST /chat/stream: meta -> provider -> delta+ -> done, turns persisted."""
+    import ingest.embed as embed_mod
+    import retrieval.rerank as rerank_mod
+
+    embed_mod.BGEM3Embedder = FakeEmbedder
+    rerank_mod.Reranker = FakeReranker
+    answer = "Justice is fairness under the law [1]."
+    install_fake_llm(answer)  # condense_query still goes through complete()
+    install_fake_llm_stream(answer, provider_id="gemini", model="fake-model", n_chunks=3)
+
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    question = "justice fairness law"
+    with TestClient(app) as client:
+        with client.stream(
+            "POST", "/chat/stream", json={"conversation_id": None, "message": question}
+        ) as resp:
+            assert resp.status_code == 200, resp.status_code
+            assert resp.headers["content-type"].startswith("text/event-stream"), resp.headers
+            body = resp.read().decode("utf-8")
+
+        events = _parse_sse(body)
+        names = [name for name, _ in events]
+        assert names[0] == "meta", names
+        assert names[1] == "provider", names
+        assert names[-1] == "done", names
+        deltas = names[2:-1]
+        assert deltas and set(deltas) == {"delta"}, names
+
+        meta = events[0][1]
+        conv_id = meta["conversation_id"]
+        assert conv_id, meta
+        assert isinstance(meta["sources"], list) and meta["sources"], meta
+
+        assert events[1][1]["provider"] == "gemini", events[1][1]
+
+        streamed = "".join(d["text"] for name, d in events if name == "delta")
+        assert streamed == answer, streamed
+
+        done = events[-1][1]
+        assert done["conversation_id"] == conv_id, done
+        assert done["provider"] == "gemini", done
+        assert isinstance(done["citations"], list) and done["citations"], done
+        assert done["grounded"] is True, done
+
+        # Both turns persisted server-side; title derived from the user message.
+        detail = client.get(f"/conversations/{conv_id}").json()
+        msgs = detail["messages"]
+        assert len(msgs) == 2, msgs
+        assert msgs[0]["role"] == "user" and msgs[0]["content"] == question, msgs
+        assert msgs[1]["role"] == "assistant" and msgs[1]["model"] == "gemini", msgs
+        assert detail["title"] == question, detail
+
+
+def test_chat_stream_pinned_rate_limit():
+    """A pinned provider 429ing yields meta -> error (no done, no assistant turn)."""
+    import ingest.embed as embed_mod
+    import retrieval.rerank as rerank_mod
+
+    embed_mod.BGEM3Embedder = FakeEmbedder
+    rerank_mod.Reranker = FakeReranker
+    install_fake_llm_stream_rate_limited("gemini")
+
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/chat/stream",
+            json={"message": "justice fairness law", "provider": "gemini"},
+        ) as resp:
+            assert resp.status_code == 200, resp.status_code
+            body = resp.read().decode("utf-8")
+
+        events = _parse_sse(body)
+        names = [name for name, _ in events]
+        assert names == ["meta", "error"], names
+
+        err = events[1][1]
+        assert err["provider"] == "gemini", err
+        assert err["reason"] == "rate_limit", err
+        assert err["partial"] is False, err
+        assert "rate limit" in err["message"].lower(), err
+
+        # The user turn is persisted (so retry works); the assistant turn is not.
+        conv_id = events[0][1]["conversation_id"]
+        detail = client.get(f"/conversations/{conv_id}").json()
+        msgs = detail["messages"]
+        assert len(msgs) == 1 and msgs[0]["role"] == "user", msgs
+
+
 TESTS = [
     test_native_pdf_extraction,
     test_ingest_native_and_query,
@@ -359,6 +631,11 @@ TESTS = [
     test_enqueue_book,
     test_force_reingest,
     test_comprehension_layer_and_global_route,
+    test_models_endpoint,
+    test_upload_ingest_books_jobs_delete,
+    test_conversations_crud,
+    test_chat_stream_happy_path,
+    test_chat_stream_pinned_rate_limit,
 ]
 
 

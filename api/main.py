@@ -6,6 +6,17 @@ Exposes the query and ingestion surface of the system:
 * ``GET  /status`` — book/chunk counts (registry + Qdrant).
 * ``POST /ingest`` — enqueue a PDF file or directory for async ingestion.
 * ``POST /query``  — embed → hybrid search → rerank → grounded answer.
+* ``POST /chat``   — multi-turn chat (client-managed history, non-streaming).
+
+Mounted routers extend this surface:
+
+* :mod:`api.routes_chat`          — ``GET /models``, ``POST /chat/stream`` (SSE).
+* :mod:`api.routes_conversations` — server-side conversation CRUD.
+* :mod:`api.routes_books`         — dashboard: upload / jobs / books / delete.
+
+The React SPA (built into ``api/static/dist`` by ``web/``) is served at ``/``;
+when no build is present the legacy single-file UI at ``api/static/index.html``
+is served instead, so the API works without Node.
 
 Heavy singletons (the BGE-M3 embedder, the cross-encoder reranker and the
 Qdrant store) are constructed once during the FastAPI lifespan and reused
@@ -46,8 +57,10 @@ logger = get_logger(__name__)
 # PDF discovery for directory ingestion.
 _PDF_SUFFIX = ".pdf"
 
-# Static web chatbot UI shipped alongside the API.
+# Static web chatbot UI shipped alongside the API. The React SPA build (from
+# web/) lands in static/dist; without it the legacy index.html is served.
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+_DIST_DIR = _STATIC_DIR / "dist"
 
 
 # -- lifespan / singleton wiring ---------------------------------------------
@@ -63,6 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     keeps the heavy model load off the request path's critical section while
     still avoiding import-time side effects.
     """
+    from core.conversations import ConversationStore
     from ingest.embed import BGEM3Embedder
     from ingest.registry import Registry
     from retrieval.rerank import Reranker
@@ -77,6 +91,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.embedder = BGEM3Embedder()
     app.state.reranker = Reranker()
     app.state.registry = Registry()
+    app.state.conversations = ConversationStore()
 
     logger.info("RAG service ready (collection=%s)", store.collection)
     try:
@@ -132,7 +147,10 @@ def _get_registry(request: Request) -> "Registry":
 
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
-    """Serve the web chatbot UI."""
+    """Serve the web UI: the built React SPA, or the legacy page without it."""
+    spa_index = _DIST_DIR / "index.html"
+    if spa_index.is_file():
+        return FileResponse(spa_index)
     return FileResponse(_STATIC_DIR / "index.html")
 
 
@@ -240,6 +258,7 @@ def query(request: Request, req: QueryRequest) -> QueryResponse:
 
     # Lazy import: keeps heavy/LLM deps out of module import.
     from llm.answer import answer_question
+    from llm.errors import ProviderError
     from retrieval.pipeline import retrieve_for_route
     from retrieval.route import classify_route, coerce_route
 
@@ -257,7 +276,17 @@ def query(request: Request, req: QueryRequest) -> QueryResponse:
         book_ids=req.book_ids, rerank_top_k=rerank_top_k,
     )
 
-    answer = answer_question(question, reranked, model=req.model, route=route)
+    # A pinned provider does NOT fall back: its failure surfaces as 429/502 so
+    # the client can tell the user to switch models or use Auto.
+    try:
+        answer = answer_question(
+            question, reranked, model=req.model, route=route, provider=req.provider
+        )
+    except ProviderError as exc:
+        raise HTTPException(
+            status_code=429 if exc.reason == "rate_limit" else 502,
+            detail={"provider": exc.provider, "reason": exc.reason, "message": exc.message},
+        ) from exc
 
     return QueryResponse(
         answer=answer.answer,
@@ -265,6 +294,7 @@ def query(request: Request, req: QueryRequest) -> QueryResponse:
         sources=answer.sources,
         model=answer.model,
         grounded=answer.grounded,
+        provider=answer.provider,
     )
 
 
@@ -281,6 +311,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
 
     # Lazy import: keeps heavy/LLM deps out of module import.
     from llm.chat import chat_answer, condense_query
+    from llm.errors import ProviderError
     from retrieval.pipeline import retrieve_for_route
     from retrieval.route import classify_route, coerce_route
 
@@ -306,7 +337,17 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         book_ids=req.book_ids, rerank_top_k=rerank_top_k,
     )
 
-    answer = chat_answer(messages, reranked, model=req.model, route=route)
+    # A pinned provider does NOT fall back: its failure surfaces as 429/502 so
+    # the client can tell the user to switch models or use Auto.
+    try:
+        answer = chat_answer(
+            messages, reranked, model=req.model, route=route, provider=req.provider
+        )
+    except ProviderError as exc:
+        raise HTTPException(
+            status_code=429 if exc.reason == "rate_limit" else 502,
+            detail={"provider": exc.provider, "reason": exc.reason, "message": exc.message},
+        ) from exc
 
     return ChatResponse(
         answer=answer.answer,
@@ -315,7 +356,45 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         model=answer.model,
         grounded=answer.grounded,
         search_query=search_query,
+        provider=answer.provider,
     )
+
+
+# -- routers + SPA serving ------------------------------------------------------
+# Registration order matters: API routers first, the SPA catch-all last, so
+# client-side routes like /dashboard resolve to the SPA without shadowing any
+# API path.
+
+from api.routes_books import router as books_router  # noqa: E402
+from api.routes_chat import router as chat_router  # noqa: E402
+from api.routes_conversations import router as conversations_router  # noqa: E402
+
+app.include_router(chat_router)
+app.include_router(conversations_router)
+app.include_router(books_router)
+
+if (_DIST_DIR / "assets").is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/assets", StaticFiles(directory=_DIST_DIR / "assets"), name="assets")
+
+
+@app.get("/{path:path}", include_in_schema=False)
+def spa_fallback(path: str) -> FileResponse:
+    """Serve the SPA shell for client-side routes (e.g. /dashboard, /c/<id>).
+
+    Real files under the build dir (favicons etc.) are served directly; paths
+    that look like files but don't exist 404 instead of returning HTML.
+    """
+    spa_index = _DIST_DIR / "index.html"
+    if not spa_index.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    candidate = (_DIST_DIR / path).resolve()
+    if candidate.is_file() and candidate.is_relative_to(_DIST_DIR.resolve()):
+        return FileResponse(candidate)
+    if "." in path.rsplit("/", maxsplit=1)[-1]:
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(spa_index)
 
 
 def main() -> None:

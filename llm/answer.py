@@ -93,12 +93,26 @@ def _looks_not_found(text: str) -> bool:
     return any(marker in lowered for marker in _NOT_FOUND_MARKERS)
 
 
+def extract_citations(answer_text: str, results: list[SearchResult]) -> tuple[list[Citation], bool]:
+    """Parse ``[n]`` markers in ``answer_text`` back to citations + groundedness.
+
+    Returns ``(citations, grounded)`` where ``grounded`` is ``False`` only when
+    the model produced no valid citations *and* its reply matches the "not
+    found in the books" phrasing. Shared by the blocking answer paths here and
+    in :mod:`llm.chat`, and by the streaming endpoint once the full text is in.
+    """
+    citations = _map_citations(_parse_citation_indices(answer_text), results)
+    grounded = bool(citations) or not _looks_not_found(answer_text)
+    return citations, grounded
+
+
 def answer_question(
     question: str,
     results: list[SearchResult],
     *,
     model: str | None = None,
     route: Route = Route.LOCAL,
+    provider: str | None = None,
 ) -> Answer:
     """Answer ``question`` grounded in ``results`` using the local LLM engine.
 
@@ -108,6 +122,10 @@ def answer_question(
     prompt and more generation headroom; LOCAL stays tight and low-temperature.
     ``grounded`` is ``False`` only when the model produced no valid citations
     *and* its reply matches the "not found in the books" phrasing.
+
+    ``provider`` pins one provider (e.g. ``"gemini"``); its failures raise
+    :class:`~llm.errors.ProviderError`, which propagates to the API layer —
+    pinned mode must never silently fall back.
     """
     chosen_model = model or engine.active_model_name()
 
@@ -130,26 +148,26 @@ def answer_question(
         len(results),
         route.value,
     )
-    answer_text = engine.complete(
+    result = engine.generate(
         system,
         [{"role": "user", "content": user_prompt}],
+        provider=provider,
         model=model,
         max_tokens=settings.answer_max_tokens_global if is_global else None,
         temperature=settings.answer_temperature_global if is_global else None,
     )
 
-    cited_numbers = _parse_citation_indices(answer_text)
-    citations = _map_citations(cited_numbers, results)
-    grounded = bool(citations) or not _looks_not_found(answer_text)
+    citations, grounded = extract_citations(result.text, results)
 
     logger.info(
-        "Answer generated: %d char(s), %d citation(s), grounded=%s",
-        len(answer_text), len(citations), grounded,
+        "Answer generated: %d char(s), %d citation(s), grounded=%s, provider=%s",
+        len(result.text), len(citations), grounded, result.provider,
     )
     return Answer(
-        answer=answer_text,
+        answer=result.text,
         citations=citations,
         sources=results,
-        model=chosen_model,
+        model=result.model or chosen_model,
         grounded=grounded,
+        provider=result.provider,
     )

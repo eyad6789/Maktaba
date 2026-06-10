@@ -115,6 +115,7 @@ class Answer(BaseModel):
     sources: list[SearchResult]
     model: str
     grounded: bool = True              # False when answer is "not found in books"
+    provider: str | None = None        # provider id that answered ("gemini"|"claude"|"local"|...)
 
 
 class IngestStats(BaseModel):
@@ -141,6 +142,7 @@ class QueryRequest(BaseModel):
     book_ids: list[str] | None = None  # optional filter to specific books
     model: str | None = None           # override answer model
     route: str | None = None           # force "local"|"global" (else auto-classified)
+    provider: str | None = None        # pin a provider ("gemini"|"claude"|"local") or "auto"
 
 
 class QueryResponse(BaseModel):
@@ -149,6 +151,7 @@ class QueryResponse(BaseModel):
     sources: list[SearchResult]
     model: str
     grounded: bool
+    provider: str | None = None        # provider id that actually answered
 
 
 class IngestRequest(BaseModel):
@@ -177,6 +180,7 @@ class ChatRequest(BaseModel):
     model: str | None = None           # override answer model
     condense: bool = True              # rewrite follow-ups into a standalone query
     route: str | None = None           # force "local"|"global" (else auto-classified)
+    provider: str | None = None        # pin a provider ("gemini"|"claude"|"local") or "auto"
 
 
 class ChatResponse(BaseModel):
@@ -186,3 +190,59 @@ class ChatResponse(BaseModel):
     model: str
     grounded: bool
     search_query: str                  # the (possibly condensed) query used to retrieve
+    provider: str | None = None        # provider id that actually answered
+
+
+class ChatStreamRequest(BaseModel):
+    """One streamed chat turn. The server owns the conversation history."""
+
+    conversation_id: str | None = None  # null -> server creates a new conversation
+    message: str                        # the user's new message (required, non-empty)
+    book_ids: list[str] | None = None   # per-turn override of the stored scope
+    provider: str | None = None         # per-turn override: "auto"|"gemini"|"claude"|"local"
+    top_k: int | None = None
+    route: str | None = None
+    condense: bool = True
+
+
+# --- Conversations (persisted chat history) -----------------------------------
+
+
+class ConversationCreate(BaseModel):
+    title: str = ""
+    model: str = "auto"                # default provider for this conversation
+    book_ids: list[str] | None = None  # default book scope (None = all books)
+
+
+class ConversationRename(BaseModel):
+    title: str
+
+
+class ConversationMessage(BaseModel):
+    """One persisted chat turn as returned by GET /conversations/{id}."""
+
+    id: int
+    role: str                          # "user" | "assistant"
+    content: str
+    citations: list[Citation] | None = None
+    model: str | None = None           # provider id that answered (assistant turns)
+    grounded: bool | None = None
+    created_at: str
+
+
+class ConversationSummary(BaseModel):
+    id: str
+    title: str
+    model: str
+    book_ids: list[str] | None = None
+    created_at: str
+    updated_at: str
+    message_count: int = 0
+
+
+class ConversationDetail(ConversationSummary):
+    messages: list[ConversationMessage] = Field(default_factory=list)
+
+
+class ConversationListResponse(BaseModel):
+    conversations: list[ConversationSummary]

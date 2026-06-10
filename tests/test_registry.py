@@ -81,6 +81,43 @@ def test_compute_hash_is_stable_sha256():
     assert len(h1) == 64  # sha256 hex digest
 
 
+def test_get_by_book_id_present_and_missing():
+    r = Registry(_tmp_db())
+    b = _book()
+    r.mark_started(b)
+    row = r.get_by_book_id(b.book_id)
+    assert row is not None
+    assert row["file_hash"] == b.file_hash
+    assert row["title"] == b.title
+    assert r.get_by_book_id("no-such-book") is None
+
+
+def test_delete_by_book_id_removes_row_and_reports_misses():
+    r = Registry(_tmp_db())
+    b = _book()
+    r.mark_started(b)
+    assert r.delete_by_book_id(b.book_id) is True
+    assert r.get_by_book_id(b.book_id) is None
+    assert r.get(b.file_hash) is None  # dedup gate reopened
+    assert r.delete_by_book_id(b.book_id) is False  # already gone
+
+
+def test_derive_book_id_matches_pipeline_rows():
+    # The worker/upload endpoint derive book_id from the file hash up front;
+    # it must equal the id the pipeline writes into the registry row.
+    from ingest.pipeline import build_book_meta, derive_book_id
+
+    r = Registry(_tmp_db())
+    file_hash = "hash-derived"
+    book = build_book_meta("x.pdf", file_hash, 5, None, None)
+    r.mark_started(book)
+    derived = derive_book_id(file_hash)
+    assert book.book_id == derived
+    row = r.get_by_book_id(derived)
+    assert row is not None
+    assert row["file_hash"] == file_hash
+
+
 if __name__ == "__main__":
     from tests._runner import main
 

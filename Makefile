@@ -1,4 +1,4 @@
-.PHONY: help install install-gpu infra-up infra-down api worker ingest eval bench e2e test compile fmt
+.PHONY: help install install-gpu infra-up infra-down api worker ingest eval bench e2e test compile fmt web-dev web-build
 
 help:
 	@echo "Targets:"
@@ -14,6 +14,8 @@ help:
 	@echo "  e2e          Run live-service integration tests (needs Qdrant+Redis)"
 	@echo "  test         Run unit tests"
 	@echo "  compile      Byte-compile all sources (syntax check)"
+	@echo "  web-dev      Run the React SPA dev server (proxies to :8000)"
+	@echo "  web-build    Build the SPA into api/static/dist"
 
 install:
 	pip install -r requirements.txt
@@ -50,3 +52,9 @@ test:
 
 compile:
 	python -m compileall -q config.py core ingest retrieval llm api scripts
+
+web-dev:
+	cd web && npm run dev
+
+web-build:
+	cd web && npm ci && npm run build

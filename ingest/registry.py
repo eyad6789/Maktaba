@@ -108,6 +108,18 @@ class Registry:
         record = self.get(file_hash)
         return bool(record) and record.get("status") == STATUS_COMPLETED
 
+    def get_by_book_id(self, book_id: str) -> dict | None:
+        """Return the stored row for ``book_id`` as a dict, or ``None``.
+
+        ``book_id`` is derived 1:1 from the file hash (uuid5), so at most one
+        row matches.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM books WHERE book_id = ?", (book_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def list_books(self, *, status: str | None = None) -> list[dict]:
         """Return all book rows (newest first), optionally filtered by status."""
         with self._connect() as conn:
@@ -223,3 +235,21 @@ class Registry:
                     "Registry: mark_failed found no row for book_id=%s", book_id
                 )
         logger.warning("Registry: failed book_id=%s error=%s", book_id, error)
+
+    def delete_by_book_id(self, book_id: str) -> bool:
+        """Delete the row for ``book_id``; return ``True`` if a row was removed.
+
+        Removing the row also reopens the dedup gate: re-uploading the same
+        file afterwards ingests it fresh instead of being skipped.
+        """
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM books WHERE book_id = ?", (book_id,))
+            conn.commit()
+        deleted = cur.rowcount > 0
+        if deleted:
+            logger.info("Registry: deleted book_id=%s", book_id)
+        else:
+            logger.warning(
+                "Registry: delete_by_book_id found no row for book_id=%s", book_id
+            )
+        return deleted

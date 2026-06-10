@@ -12,6 +12,8 @@ venv/
 # Data & models
 data/books/
 data/registry/*.db
+data/registry/*.db-shm
+data/registry/*.db-wal
 data/*.db
 models/
 *.pdf
@@ -19,6 +21,10 @@ models/
 # Qdrant / Redis local volumes (if mounted locally)
 qdrant_storage/
 redis_data/
+
+# Web SPA (build artifacts; sources in web/ are tracked)
+web/node_modules/
+api/static/dist/
 
 # Logs / caches
 *.log

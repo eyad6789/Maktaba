@@ -8,7 +8,10 @@
 
 OCR failures are captured per page (`IngestStats.failed_pages`) and never
 abort the whole book; any unexpected error marks the book failed in the
-registry and returns an `IngestStats(status="failed", ...)`.
+registry and returns an `IngestStats(status="failed", ...)`. An optional
+`on_progress(stage, current, total)` callback surfaces live progress (per-page
+extraction, then the coarse summarize/embed/upsert steps) and is wrapped so a
+failing callback can never fail ingestion.
 
 Heavy libraries (FlagEmbedding, OCR backends, qdrant_client) are pulled in by
 the collaborating objects passed in or imported lazily, so importing this
@@ -19,7 +22,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from config import settings
 from core.logging import get_logger
@@ -46,6 +49,16 @@ logger = get_logger(__name__)
 NAMESPACE_URL = uuid.NAMESPACE_URL
 
 
+def derive_book_id(file_hash: str) -> str:
+    """Deterministic book id for a file hash: ``uuid5(NAMESPACE_URL, file_hash)``.
+
+    Shared by the pipeline, the RQ worker (job metadata) and the upload
+    endpoint so every component maps the same file to the same id without
+    running the pipeline first.
+    """
+    return str(uuid.uuid5(NAMESPACE_URL, file_hash))
+
+
 def build_book_meta(
     path: str | Path,
     file_hash: str,
@@ -60,7 +73,7 @@ def build_book_meta(
     stem when not supplied. ``language`` is filled in later from page content.
     """
     src = Path(path)
-    book_id = str(uuid.uuid5(NAMESPACE_URL, file_hash))
+    book_id = derive_book_id(file_hash)
     resolved_title = (title or "").strip() or src.stem
     return BookMeta(
         book_id=book_id,
@@ -208,6 +221,7 @@ def ingest_book(
     title: str | None = None,
     author: str | None = None,
     force: bool = False,
+    on_progress: Callable[[str, int, int], None] | None = None,
 ) -> IngestStats:
     """Ingest a single PDF book end to end.
 
@@ -224,6 +238,10 @@ def ingest_book(
             rebuild the comprehension layer over an existing corpus. Upserts are
             idempotent (deterministic ids), so this overwrites rather than
             duplicates.
+        on_progress: Optional ``(stage, current, total)`` callback for live
+            progress reporting (stages: ``extracting``/``summarizing``/
+            ``embedding``/``upserting``/``done``). Purely advisory — any
+            exception it raises is swallowed and can never fail ingestion.
 
     Returns:
         An :class:`IngestStats` describing the outcome. ``status`` is
@@ -233,8 +251,17 @@ def ingest_book(
     src = Path(path)
     file_hash = registry.compute_hash(src)
 
+    def _progress(stage: str, current: int, total: int) -> None:
+        """Invoke ``on_progress``; a failing callback must never abort the book."""
+        if on_progress is None:
+            return
+        try:
+            on_progress(stage, current, total)
+        except Exception:  # noqa: BLE001 - progress is advisory by design
+            logger.debug("progress callback failed at stage %r", stage, exc_info=True)
+
     if not force and registry.is_ingested(file_hash):
-        book_id = str(uuid.uuid5(NAMESPACE_URL, file_hash))
+        book_id = derive_book_id(file_hash)
         logger.info("skipping already-ingested book: %s (%s)", src, book_id)
         return IngestStats(
             book_id=book_id,
@@ -263,6 +290,7 @@ def ingest_book(
         for index in range(num_pages):
             page = doc.load_page(index)
             page_number = index + 1
+            _progress("extracting", page_number, num_pages)
 
             # Lazily acquire an OCR backend only when a scanned page needs it.
             if ocr_backend is None:
@@ -307,12 +335,15 @@ def ingest_book(
         # embed + upsert path and become retrievable alongside raw passages.
         summary_nodes: list[Chunk] = []
         if settings.enable_comprehension and chunks:
+            _progress("summarizing", 0, 1)
             summary_nodes = _build_summary_nodes(doc, pages, chunks, book, num_pages)
 
         num_chunks = 0
         if chunks:
             nodes = chunks + summary_nodes
+            _progress("embedding", 0, 1)
             embeddings = _embed_chunks(embedder, nodes)
+            _progress("upserting", 0, 1)
             store.ensure_collection()
             store.upsert_chunks(nodes, embeddings)
             num_chunks = len(chunks)
@@ -344,6 +375,7 @@ def ingest_book(
             scanned_pages,
             len(failed_pages),
         )
+        _progress("done", 1, 1)
         return stats
 
     except Exception as exc:  # noqa: BLE001 - top-level book guard
@@ -353,9 +385,7 @@ def ingest_book(
                 registry.mark_failed(book.book_id, str(exc))
             except Exception:  # noqa: BLE001 - best-effort status update
                 logger.exception("failed to mark book %s as failed", book.book_id)
-        book_id = book.book_id if book is not None else str(
-            uuid.uuid5(NAMESPACE_URL, file_hash)
-        )
+        book_id = book.book_id if book is not None else derive_book_id(file_hash)
         return IngestStats(
             book_id=book_id,
             title=(book.title if book is not None else None)

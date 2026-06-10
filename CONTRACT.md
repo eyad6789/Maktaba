@@ -170,7 +170,66 @@ GET  /health            -> {"status": "ok"}
 GET  /status            -> {"books": int, "chunks": int}   # registry + qdrant counts
 POST /ingest  (IngestRequest)  -> IngestResponse           # enqueue file/dir
 POST /query   (QueryRequest)   -> QueryResponse            # embed->search->rerank->answer
-# Lazy-init singletons (embedder, reranker, store) on startup; reuse across requests.
+POST /chat    (ChatRequest)    -> ChatResponse             # multi-turn, client-managed history
+# Lazy-init singletons (embedder, reranker, store, conversations) on startup.
+# Routers: api/routes_chat.py + api/routes_conversations.py + api/routes_books.py.
+# GET / serves api/static/dist (React SPA) when built, else the legacy page;
+# a catch-all GET /{path} serves the SPA shell for client routes (/dashboard).
+```
+
+## llm/errors.py
+```python
+class ProviderError(Exception)            # .provider, .reason, .message
+# reason: "rate_limit" | "auth" | "timeout" | "unavailable" | "empty" | "error"
+class AllProvidersFailedError(RuntimeError)
+def classify_error(exc: Exception) -> str # duck-typed (status_code/name/message), no SDK imports
+```
+
+## llm/engine.py  (provider-aware additions)
+```python
+@dataclass GenResult: text: str; provider: str; model: str
+def generate(system, messages, *, provider=None, model=None, ...) -> GenResult
+# provider None/"auto": walk the fallback chain, report who answered.
+# pinned id ("gemini"|"claude"|"local"): call only it; failure -> ProviderError (no fallback).
+def stream(system, messages, *, provider=None, ...) -> Iterator[tuple[str, object]]
+# yields ("provider", {provider, model}) once at first token, then ("delta", str)...
+def list_providers() -> list[dict]        # [{id,label,model,available}] in chain order
+def provider_label(provider_id: str) -> str
+```
+
+## core/conversations.py  (SQLite, stdlib sqlite3)
+```python
+class ConversationStore:                   # settings.conversations_db; WAL + FK cascade
+    def create(title="", model="auto", book_ids=None) -> dict
+    def list() -> list[dict]               # newest-updated first, with message_count
+    def get(conv_id) -> dict | None        # includes ordered "messages"
+    def append_message(conv_id, role, content, *, citations=None, model=None, grounded=None) -> dict
+    def rename(conv_id, title) -> bool
+    def delete(conv_id) -> bool
+    def set_title_from_message(conv_id, text)  # word-boundary truncation, <= 60 chars
+```
+
+## api/routes_chat.py
+```python
+GET  /models       -> {"default": "auto", "providers": [...]}        # model picker source
+POST /chat/stream  (ChatStreamRequest) -> SSE                        # server-side history
+# events: meta {conversation_id, search_query, route, sources}
+#         provider {provider, model}     (at first token)
+#         delta {text}*                  done {citations, grounded, provider, model, conversation_id}
+#         error {provider, reason, message, partial}   (terminal; pinned never falls back)
+```
+
+## api/routes_conversations.py
+```python
+GET/POST /conversations; GET/PATCH/DELETE /conversations/{id}        # CRUD over ConversationStore
+```
+
+## api/routes_books.py  (dashboard)
+```python
+POST   /upload            # multipart PDF -> uploads_dir, hash dedup, enqueue; 400/413 guards
+GET    /jobs, /jobs/{id}  # RQ state + stage/current/total from job.meta ("not_found" is 200)
+GET    /books             # registry rows + {total_books, total_chunks}
+DELETE /books/{book_id}   # 409 mid-ingest; Qdrant delete_by_book + registry delete + unlink upload
 ```
 
 ## scripts/ingest_dir.py

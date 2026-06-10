@@ -170,6 +170,13 @@ class Settings(BaseSettings):
     registry_db: Path = Path("data/registry/registry.db")
     log_level: str = "INFO"
 
+    # --- Conversations (server-side chat history) ---
+    conversations_db: Path = Path("data/registry/conversations.db")
+
+    # --- Browser uploads (dashboard) ---
+    uploads_dir: Path = Path("data/books/uploads")
+    max_upload_mb: int = 200
+
 
 @lru_cache
 def get_settings() -> Settings:

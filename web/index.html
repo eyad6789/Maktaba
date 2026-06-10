@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#211a12" />
+    <title>Maktabah · مكتبة — Book Intelligence</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23211a12'/%3E%3Cpath d='M8 9.5c2.6-1.4 5.2-1.4 7.5 0v13c-2.3-1.4-4.9-1.4-7.5 0zM24 9.5c-2.6-1.4-5.2-1.4-7.5 0v13c2.3-1.4 4.9-1.4 7.5 0z' fill='%23e9dcc3'/%3E%3Cpath d='M16 9.2v13.6' stroke='%23a23b2e' stroke-width='1.6'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=Amiri:ital,wght@0,400;0,700;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // Set direction before first paint to avoid an LTR->RTL flash.
+      try {
+        var lang = localStorage.getItem('maktabah.lang') || 'en'
+        document.documentElement.lang = lang
+        document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr'
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

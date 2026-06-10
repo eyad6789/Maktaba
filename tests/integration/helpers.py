@@ -99,12 +99,59 @@ class FakeOCR:
 def install_fake_llm(answer_text: str) -> None:
     """Monkeypatch the LLM engine to return a canned completion (no model/API).
 
-    Patches ``llm.engine.complete`` (which both ``llm.answer`` and ``llm.chat``
-    call via the module), so generation is deterministic and offline in tests.
+    Patches ``llm.engine.complete`` (still used by ``condense_query`` and the
+    ingest summarizer) AND ``llm.engine.generate`` (the provider-aware call
+    ``llm.answer``/``llm.chat`` now make), so generation is deterministic and
+    offline in tests regardless of which entrypoint the production code uses.
     """
     import llm.engine as engine_mod
 
     engine_mod.complete = lambda system, messages, **kwargs: answer_text  # type: ignore[assignment]
+    engine_mod.generate = lambda system, messages, **kwargs: engine_mod.GenResult(  # type: ignore[assignment]
+        text=answer_text, provider="gemini", model="fake-model"
+    )
+
+
+def install_fake_llm_stream(
+    answer_text: str,
+    provider_id: str = "gemini",
+    model: str = "fake-model",
+    n_chunks: int = 3,
+) -> None:
+    """Monkeypatch ``llm.engine.stream`` to stream a canned answer (no API).
+
+    The fake yields exactly what the real engine does: one
+    ``("provider", {"provider", "model"})`` event, then ``answer_text`` split
+    into (up to) ``n_chunks`` ``("delta", piece)`` tuples — so the SSE endpoint
+    is exercised end to end with deterministic output.
+    """
+    import llm.engine as engine_mod
+
+    def fake_stream(system, messages, **kwargs):  # noqa: ANN001, ANN003 - duck-typed
+        yield ("provider", {"provider": provider_id, "model": model})
+        size = max(1, -(-len(answer_text) // max(1, n_chunks)))  # ceil division
+        for i in range(0, len(answer_text), size):
+            yield ("delta", answer_text[i : i + size])
+
+    engine_mod.stream = fake_stream  # type: ignore[assignment]
+
+
+def install_fake_llm_stream_rate_limited(provider_id: str = "gemini") -> None:
+    """Monkeypatch ``llm.engine.stream`` to hit a rate limit before any token.
+
+    Mirrors a pinned provider 429ing: the generator raises
+    ``ProviderError(reason="rate_limit")`` before its first yield, which the
+    streaming endpoint must surface as a single terminal ``error`` SSE event
+    (and must NOT persist an assistant turn).
+    """
+    import llm.engine as engine_mod
+    from llm.errors import ProviderError
+
+    def fake_stream(system, messages, **kwargs):  # noqa: ANN001, ANN003 - duck-typed
+        raise ProviderError(provider_id, "rate_limit", "429 quota exceeded")
+        yield  # pragma: no cover - unreachable; makes this a generator function
+
+    engine_mod.stream = fake_stream  # type: ignore[assignment]
 
 
 # --- PDF generators (real PyMuPDF) ------------------------------------------

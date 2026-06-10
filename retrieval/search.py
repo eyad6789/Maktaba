@@ -164,6 +164,31 @@ class QdrantStore:
         logger.info("Upserted %d chunks into %r", total, self.collection)
         return total
 
+    def delete_by_book(self, book_id: str) -> None:
+        """Delete every point belonging to ``book_id`` from the collection.
+
+        Filters on the indexed ``book_id`` payload key, so this removes the
+        book's passages and its summary nodes alike. ``wait=True`` makes the
+        deletion synchronous: when this returns, the points are gone (and
+        :meth:`count` reflects it).
+        """
+        from qdrant_client import models as qm
+
+        self.client.delete(
+            collection_name=self.collection,
+            points_selector=qm.FilterSelector(
+                filter=qm.Filter(
+                    must=[
+                        qm.FieldCondition(
+                            key="book_id", match=qm.MatchValue(value=book_id)
+                        )
+                    ]
+                )
+            ),
+            wait=True,
+        )
+        logger.info("Deleted points for book_id=%s from %r", book_id, self.collection)
+
     # -- reads ----------------------------------------------------------------
 
     @staticmethod

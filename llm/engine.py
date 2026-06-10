@@ -10,17 +10,30 @@ Choose a backend with ``settings.llm_backend``:
 * ``"anthropic"``: the Claude cloud API (opt-in; needs a key + network).
 
 All heavy SDKs (torch/transformers, openai, anthropic) are imported lazily, so
-this module stays importable on a CPU-only box. The single public entrypoint is
-:func:`complete`.
+this module stays importable on a CPU-only box. Public entrypoints:
+
+* :func:`complete` — the original blocking call; signature and behavior are
+  frozen (utility callers and the e2e fakes depend on it).
+* :func:`generate` — like ``complete`` but returns a :class:`GenResult` naming
+  the provider that actually answered, and supports *pinning* one provider
+  (``provider="gemini"``), in which case failures raise
+  :class:`~llm.errors.ProviderError` instead of falling through the chain.
+* :func:`stream` — token streaming with the same auto/pinned semantics.
+* :func:`list_providers` — the active chain as ``{id,label,model,available}``
+  rows for the UI's model picker.
 """
 
 from __future__ import annotations
 
 import threading
+import time
+from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 from config import settings
 from core.logging import get_logger
+from llm.errors import AllProvidersFailedError, ProviderError, classify_error
 
 logger = get_logger(__name__)
 
@@ -60,7 +73,10 @@ def active_model_name() -> str:
 class TransformersLLM:
     """Local Hugging Face causal LM, run in-process (fully offline)."""
 
-    def __init__(self) -> None:
+    def __init__(self, provider_id: str = "local", label: str = "Local (Transformers)") -> None:
+        self.provider_id = provider_id
+        self.label = label
+        self.model_name = settings.local_llm_model
         self._model: Any = None
         self._tok: Any = None
 
@@ -113,6 +129,12 @@ class TransformersLLM:
         new_tokens = output[0][inputs.input_ids.shape[1]:]
         return self._tok.decode(new_tokens, skip_special_tokens=True).strip()
 
+    def stream_complete(self, system: str, messages: list[dict], *, model: str | None, max_tokens: int, temperature: float) -> Iterator[str]:
+        """In-process HF generation has no incremental API here — one-shot yield."""
+        out = self.complete(system, messages, model=model, max_tokens=max_tokens, temperature=temperature)
+        if out:
+            yield out
+
 
 class OpenAICompatibleLLM:
     """An OpenAI-compatible chat endpoint.
@@ -129,12 +151,17 @@ class OpenAICompatibleLLM:
         model: str | None = None,
         name: str = "openai",
         timeout: float | None = None,
+        provider_id: str = "local",
+        label: str = "Local (Ollama)",
     ) -> None:
         self._base_url = base_url or settings.openai_base_url
         self._api_key = api_key or settings.openai_api_key
         self._model = model or settings.openai_model
         self._timeout = timeout
-        self.name = name
+        self.name = name                  # legacy chain name (tests match on it)
+        self.provider_id = provider_id    # stable id exposed to the API/UI
+        self.label = label                # human-readable picker label
+        self.model_name = self._model
         self._client: Any = None
 
     def _client_or_load(self) -> Any:
@@ -156,6 +183,23 @@ class OpenAICompatibleLLM:
             temperature=temperature,
         )
         return (resp.choices[0].message.content or "").strip()
+
+    def stream_complete(self, system: str, messages: list[dict], *, model: str | None, max_tokens: int, temperature: float) -> Iterator[str]:
+        client = self._client_or_load()
+        stream = client.chat.completions.create(
+            model=model or self._model,
+            messages=[{"role": "system", "content": system}] + list(messages),
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=True,
+        )
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None)
+            if not choices:  # some providers send keep-alive/usage chunks
+                continue
+            text = getattr(choices[0].delta, "content", None)
+            if text:
+                yield text
 
 
 class FallbackLLM:
@@ -182,24 +226,31 @@ class FallbackLLM:
             providers.append(OpenAICompatibleLLM(
                 base_url=settings.minimax_base_url, api_key=settings.minimax_api_key,
                 model=settings.minimax_model, name="minimax", timeout=settings.cloud_llm_timeout,
+                provider_id="minimax", label="MiniMax",
             ))
         if settings.gemini_api_key:
             providers.append(OpenAICompatibleLLM(
                 base_url=settings.gemini_base_url, api_key=settings.gemini_api_key,
                 model=settings.gemini_model, name="gemini", timeout=settings.cloud_llm_timeout,
+                provider_id="gemini", label="Gemini",
             ))
         if settings.groq_api_key:
             providers.append(OpenAICompatibleLLM(
                 base_url=settings.groq_base_url, api_key=settings.groq_api_key,
                 model=settings.groq_model, name="groq", timeout=settings.cloud_llm_timeout,
+                provider_id="groq", label="Groq",
             ))
         # Claude (cloud) sits after the other cloud providers and before the local
         # model — e.g. Gemini primary, Claude as fallback if Gemini fails.
         if settings.anthropic_api_key:
-            providers.append(AnthropicLLM(name="anthropic", timeout=settings.cloud_llm_timeout))
+            providers.append(AnthropicLLM(
+                name="anthropic", timeout=settings.cloud_llm_timeout,
+                provider_id="claude", label="Claude",
+            ))
         providers.append(OpenAICompatibleLLM(
             base_url=settings.openai_base_url, api_key=settings.openai_api_key,
             model=settings.openai_model, name="local-ollama", timeout=settings.local_llm_timeout,
+            provider_id="local", label="Local (Ollama)",
         ))
         self._providers = providers
         logger.info("LLM fallback chain: %s", " -> ".join(p.name for p in providers))
@@ -230,15 +281,24 @@ class FallbackLLM:
             except Exception as exc:  # noqa: BLE001 - try the next provider
                 logger.warning("LLM provider %s failed (%s); trying next", provider.name, exc)
                 errors.append(f"{provider.name}: {exc}")
-        raise RuntimeError("All LLM providers failed: " + "; ".join(errors))
+        raise AllProvidersFailedError("All LLM providers failed: " + "; ".join(errors))
 
 
 class AnthropicLLM:
     """Claude cloud API. Used as the configured backend (``llm_backend=anthropic``)
     or as a link in the :class:`FallbackLLM` chain. Requires ANTHROPIC_API_KEY."""
 
-    def __init__(self, name: str = "anthropic", timeout: float | None = None) -> None:
+    def __init__(
+        self,
+        name: str = "anthropic",
+        timeout: float | None = None,
+        provider_id: str = "claude",
+        label: str = "Claude",
+    ) -> None:
         self.name = name
+        self.provider_id = provider_id
+        self.label = label
+        self.model_name = settings.answer_model
         self._timeout = timeout
         self._client: Any = None
 
@@ -269,6 +329,20 @@ class AnthropicLLM:
                 if txt:
                     parts.append(txt)
         return "".join(parts).strip()
+
+    def stream_complete(self, system: str, messages: list[dict], *, model: str | None, max_tokens: int, temperature: float) -> Iterator[str]:
+        client = self._client_or_load()
+        # Same cached system block as complete() so streaming hits the cache too.
+        with client.messages.stream(
+            model=model or settings.answer_model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+            messages=list(messages),
+        ) as stream:
+            for text in stream.text_stream:
+                if text:
+                    yield text
 
 
 _BACKENDS = {
@@ -317,3 +391,209 @@ def complete(
         max_tokens=max_tokens or settings.answer_max_tokens,
         temperature=settings.answer_temperature if temperature is None else temperature,
     )
+
+
+# --- Provider-aware API (auto fallback / pinned provider / streaming) ---------
+
+
+@dataclass
+class GenResult:
+    """A completion plus the identity of the provider/model that produced it."""
+
+    text: str
+    provider: str   # provider_id, e.g. "gemini" | "claude" | "local"
+    model: str      # the model that actually answered
+
+
+def _chain() -> list[Any]:
+    """Provider instances in fallback order for the active backend.
+
+    The fallback backend exposes its full chain; any single backend is a
+    one-element chain, so auto/pinned logic works uniformly.
+    """
+    eng = get_engine()
+    if isinstance(eng, FallbackLLM):
+        return eng._build()
+    return [eng]
+
+
+def _provider_model(provider: Any) -> str:
+    """The provider's configured model name (best effort for duck-typed fakes)."""
+    return getattr(provider, "model_name", None) or getattr(provider, "_model", None) or ""
+
+
+def provider_label(provider_id: str) -> str:
+    """Human-readable label for a provider id (the id itself when unknown)."""
+    for p in _chain():
+        if getattr(p, "provider_id", None) == provider_id:
+            return getattr(p, "label", provider_id)
+    return provider_id
+
+
+# Cached local-server probe: (monotonic timestamp, reachable?). The probe is
+# only consulted for the "local" provider so the picker can grey it out when
+# Ollama is down; it must never raise or block the request path noticeably.
+_LOCAL_PROBE_TTL = 60.0
+_local_probe: tuple[float, bool] | None = None
+
+
+def _local_available() -> bool:
+    global _local_probe
+    now = time.monotonic()
+    if _local_probe is not None and now - _local_probe[0] < _LOCAL_PROBE_TTL:
+        return _local_probe[1]
+    ok = False
+    try:
+        import urllib.request  # stdlib; lazy to keep import time trivial
+
+        url = settings.openai_base_url.rstrip("/") + "/models"
+        with urllib.request.urlopen(url, timeout=1.5):
+            ok = True
+    except Exception:  # noqa: BLE001 - the probe must never raise
+        ok = False
+    _local_probe = (now, ok)
+    return ok
+
+
+def list_providers() -> list[dict]:
+    """The active chain as ``{id, label, model, available}`` rows, in order."""
+    rows: list[dict] = []
+    for p in _chain():
+        pid = getattr(p, "provider_id", "local")
+        rows.append({
+            "id": pid,
+            "label": getattr(p, "label", pid),
+            "model": _provider_model(p),
+            "available": _local_available() if pid == "local" else True,
+        })
+    return rows
+
+
+def _resolve_pinned(chain: list[Any], provider: str) -> Any:
+    """The chain entry whose provider_id matches, else ProviderError."""
+    for p in chain:
+        if getattr(p, "provider_id", None) == provider:
+            return p
+    known = ", ".join(getattr(p, "provider_id", "?") for p in chain)
+    raise ProviderError(provider, "error", f"unknown provider {provider!r}; available: {known}")
+
+
+def generate(
+    system: str,
+    messages: list[dict],
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> GenResult:
+    """Like :func:`complete`, but provider-aware.
+
+    ``provider=None``/``"auto"`` walks the chain exactly like the fallback
+    backend (an explicit ``model=`` still means "go straight to the local /
+    last provider" — the utility-model rule) and reports who answered. Any
+    other ``provider`` PINS that provider: it alone is called, and any failure
+    raises :class:`ProviderError` — no silent fallback.
+    """
+    max_tokens = max_tokens or settings.answer_max_tokens
+    temperature = settings.answer_temperature if temperature is None else temperature
+    chain = _chain()
+
+    if provider is not None and provider != "auto":
+        target = _resolve_pinned(chain, provider)
+        try:
+            out = target.complete(system, messages, model=model, max_tokens=max_tokens, temperature=temperature)
+        except Exception as exc:  # noqa: BLE001 - pinned: classify, never fall back
+            raise ProviderError(provider, classify_error(exc), str(exc)) from exc
+        if not out or not out.strip():
+            raise ProviderError(provider, "empty", f"{provider} returned an empty response")
+        return GenResult(text=out, provider=provider, model=model or _provider_model(target))
+
+    # Auto: an explicit model override names a LOCAL model — go straight to the
+    # last (local) provider, mirroring FallbackLLM.complete.
+    if model is not None:
+        last = chain[-1]
+        out = last.complete(system, messages, model=model, max_tokens=max_tokens, temperature=temperature)
+        return GenResult(text=out, provider=getattr(last, "provider_id", "local"), model=model)
+
+    errors: list[str] = []
+    for p in chain:
+        try:
+            out = p.complete(system, messages, model=None, max_tokens=max_tokens, temperature=temperature)
+            if out and out.strip():
+                if errors:
+                    logger.info("Answered via %s after %d provider(s) failed", p.name, len(errors))
+                return GenResult(text=out, provider=getattr(p, "provider_id", p.name), model=_provider_model(p))
+            errors.append(f"{p.name}: empty response")
+        except Exception as exc:  # noqa: BLE001 - try the next provider
+            logger.warning("LLM provider %s failed (%s); trying next", p.name, exc)
+            errors.append(f"{p.name}: {exc}")
+    raise AllProvidersFailedError("All LLM providers failed: " + "; ".join(errors))
+
+
+def stream(
+    system: str,
+    messages: list[dict],
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> Iterator[tuple[str, object]]:
+    """Stream a completion as ``("provider", {...})`` then ``("delta", text)...``.
+
+    The ``provider`` event is emitted exactly once, only after the FIRST text
+    chunk has been pulled successfully — in auto mode a provider that dies
+    before its first chunk is skipped (next in chain), so callers never see a
+    provider announced that then produced nothing. Failures AFTER the first
+    chunk raise :class:`ProviderError` (callers already hold partial output).
+    Pinned mode never falls back: any failure raises :class:`ProviderError`.
+    """
+    max_tokens = max_tokens or settings.answer_max_tokens
+    temperature = settings.answer_temperature if temperature is None else temperature
+    chain = _chain()
+
+    pinned = provider is not None and provider != "auto"
+    if pinned:
+        candidates = [_resolve_pinned(chain, provider)]
+    elif model is not None:
+        candidates = [chain[-1]]  # explicit model = local/last, as in generate()
+    else:
+        candidates = chain
+
+    errors: list[str] = []
+    for p in candidates:
+        pid = getattr(p, "provider_id", p.name)
+        it = p.stream_complete(system, messages, model=model, max_tokens=max_tokens, temperature=temperature)
+        try:
+            first = next(chunk for chunk in it if chunk)
+        except StopIteration:  # stream ended before any text
+            if pinned:
+                raise ProviderError(pid, "empty", f"{pid} returned an empty response") from None
+            logger.warning("LLM provider %s streamed nothing; trying next", p.name)
+            errors.append(f"{p.name}: empty response")
+            continue
+        except Exception as exc:  # noqa: BLE001 - failed before the first chunk
+            if pinned:
+                raise ProviderError(pid, classify_error(exc), str(exc)) from exc
+            logger.warning("LLM provider %s failed (%s); trying next", p.name, exc)
+            errors.append(f"{p.name}: {exc}")
+            continue
+
+        if errors:
+            logger.info("Streaming via %s after %d provider(s) failed", p.name, len(errors))
+        yield ("provider", {"provider": pid, "model": model or _provider_model(p)})
+        yield ("delta", first)
+        # Past the first chunk there is no falling back — partial output has
+        # already reached the caller, so surface failures as ProviderError.
+        while True:
+            try:
+                chunk = next(it)
+            except StopIteration:
+                return
+            except Exception as exc:  # noqa: BLE001
+                raise ProviderError(pid, classify_error(exc), str(exc)) from exc
+            if chunk:
+                yield ("delta", chunk)
+
+    raise AllProvidersFailedError("All LLM providers failed: " + "; ".join(errors))

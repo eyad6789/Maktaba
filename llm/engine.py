@@ -41,6 +41,84 @@ _engine: Any = None
 _lock = threading.Lock()
 
 
+# --- provider cooldown (AUTO chain only) --------------------------------------
+# When a provider in the AUTO fallback chain fails with a rate-limit-classified
+# error, it goes on cooldown and subsequent chain calls SKIP it instead of
+# re-trying (and re-failing) it on every request — e.g. a Gemini per-day quota
+# exhaustion would otherwise burn retries + seconds on every call all day.
+# PINNED calls (user explicitly picked a provider) bypass the cooldown entirely:
+# they neither consult nor record it. Cooldown is an optimization, not a circuit
+# breaker — if skipping would leave nothing to try, the chain is walked anyway.
+
+_now = time.monotonic               # injectable clock — tests override engine._now
+_cooldowns: dict[str, float] = {}   # provider key -> monotonic expiry
+_cooldown_lock = threading.Lock()
+
+# A per-DAY quota (e.g. Gemini's "GenerateRequestsPerDayPerProjectPerModel")
+# will not recover in minutes — escalate the cooldown to at least this long.
+_DAILY_QUOTA_TOKENS: tuple[str, ...] = ("perday", "per day")
+_DAILY_QUOTA_MIN_COOLDOWN = 1800.0
+
+
+def reset_cooldowns() -> None:
+    """Clear all provider cooldowns (test isolation / admin reset)."""
+    with _cooldown_lock:
+        _cooldowns.clear()
+
+
+def _provider_key(provider: Any) -> str:
+    """Stable cooldown key for a provider (works for duck-typed fakes too)."""
+    return getattr(provider, "provider_id", None) or getattr(provider, "name", None) or repr(provider)
+
+
+def _cooldown_remaining(provider: Any) -> float:
+    """Seconds of cooldown left for ``provider`` (0 when none; prunes expired)."""
+    key = _provider_key(provider)
+    with _cooldown_lock:
+        expiry = _cooldowns.get(key)
+        if expiry is None:
+            return 0.0
+        remaining = expiry - _now()
+        if remaining <= 0:
+            del _cooldowns[key]
+            return 0.0
+        return remaining
+
+
+def _apply_cooldown(provider: Any, exc: BaseException) -> None:
+    """Put ``provider`` on cooldown if ``exc`` classifies as a rate limit."""
+    if classify_error(exc) != "rate_limit":
+        return
+    seconds = float(settings.provider_cooldown_seconds)
+    text = str(exc).lower()
+    if any(token in text for token in _DAILY_QUOTA_TOKENS):
+        seconds = max(seconds, _DAILY_QUOTA_MIN_COOLDOWN)
+    key = _provider_key(provider)
+    with _cooldown_lock:
+        _cooldowns[key] = _now() + seconds
+    logger.info("provider %s rate-limited; cooling down for %ds", key, int(seconds))
+
+
+def _skip_cooled(candidates: list[Any]) -> list[Any]:
+    """``candidates`` minus cooled-down providers — but never an empty list.
+
+    If EVERY candidate is on cooldown, the original list is returned unchanged
+    (try them all anyway, in order): graceful degradation beats an immediate
+    AllProvidersFailedError when the cooldowns may simply be stale.
+    """
+    remaining = [_cooldown_remaining(p) for p in candidates]
+    if candidates and all(r > 0 for r in remaining):
+        logger.info("all %d providers on cooldown; trying the full chain anyway", len(candidates))
+        return list(candidates)
+    eligible: list[Any] = []
+    for p, r in zip(candidates, remaining):
+        if r > 0:
+            logger.info("provider %s on cooldown for %ds; skipping", _provider_key(p), int(r))
+        else:
+            eligible.append(p)
+    return eligible
+
+
 def active_model_name() -> str:
     """Human-readable name of the model the active backend will use.
 
@@ -208,7 +286,9 @@ class FallbackLLM:
     Chain: MiniMax -> Gemini -> local Ollama. A cloud provider is included only
     when its API key is set, and any error (bad key, network, incompatible
     response) is caught so the next provider is tried. The local model is always
-    last, so answering never fully fails as long as Ollama is up.
+    last, so answering never fully fails as long as Ollama is up. A provider
+    that fails with a rate-limit error is skipped for a cooldown window (see
+    the provider-cooldown section above) instead of re-failing on every call.
 
     An explicit per-call ``model`` (used for cheap utility calls: condensation,
     routing, summarization) names a LOCAL model, so it is sent straight to the
@@ -266,7 +346,7 @@ class FallbackLLM:
             )
 
         errors: list[str] = []
-        for provider in providers:
+        for provider in _skip_cooled(providers):
             try:
                 out = provider.complete(
                     system, messages, model=None, max_tokens=max_tokens, temperature=temperature
@@ -279,6 +359,7 @@ class FallbackLLM:
                     return out
                 errors.append(f"{provider.name}: empty response")
             except Exception as exc:  # noqa: BLE001 - try the next provider
+                _apply_cooldown(provider, exc)
                 logger.warning("LLM provider %s failed (%s); trying next", provider.name, exc)
                 errors.append(f"{provider.name}: {exc}")
         raise AllProvidersFailedError("All LLM providers failed: " + "; ".join(errors))
@@ -517,7 +598,7 @@ def generate(
         return GenResult(text=out, provider=getattr(last, "provider_id", "local"), model=model)
 
     errors: list[str] = []
-    for p in chain:
+    for p in _skip_cooled(chain):
         try:
             out = p.complete(system, messages, model=None, max_tokens=max_tokens, temperature=temperature)
             if out and out.strip():
@@ -526,6 +607,7 @@ def generate(
                 return GenResult(text=out, provider=getattr(p, "provider_id", p.name), model=_provider_model(p))
             errors.append(f"{p.name}: empty response")
         except Exception as exc:  # noqa: BLE001 - try the next provider
+            _apply_cooldown(p, exc)
             logger.warning("LLM provider %s failed (%s); trying next", p.name, exc)
             errors.append(f"{p.name}: {exc}")
     raise AllProvidersFailedError("All LLM providers failed: " + "; ".join(errors))
@@ -555,11 +637,11 @@ def stream(
 
     pinned = provider is not None and provider != "auto"
     if pinned:
-        candidates = [_resolve_pinned(chain, provider)]
+        candidates = [_resolve_pinned(chain, provider)]  # pinned bypasses cooldowns
     elif model is not None:
         candidates = [chain[-1]]  # explicit model = local/last, as in generate()
     else:
-        candidates = chain
+        candidates = _skip_cooled(chain)
 
     errors: list[str] = []
     for p in candidates:
@@ -576,6 +658,7 @@ def stream(
         except Exception as exc:  # noqa: BLE001 - failed before the first chunk
             if pinned:
                 raise ProviderError(pid, classify_error(exc), str(exc)) from exc
+            _apply_cooldown(p, exc)
             logger.warning("LLM provider %s failed (%s); trying next", p.name, exc)
             errors.append(f"{p.name}: {exc}")
             continue
@@ -592,6 +675,8 @@ def stream(
             except StopIteration:
                 return
             except Exception as exc:  # noqa: BLE001
+                if not pinned:  # auto: a mid-stream rate limit still cools the provider
+                    _apply_cooldown(p, exc)
                 raise ProviderError(pid, classify_error(exc), str(exc)) from exc
             if chunk:
                 yield ("delta", chunk)

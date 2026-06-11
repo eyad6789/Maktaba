@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     # fails fast and the chain moves on; local is long because CPU is slow.
     cloud_llm_timeout: float = 60.0
     local_llm_timeout: float = 600.0
+    # When a provider in the AUTO fallback chain fails with a rate-limit error
+    # (429 / quota exhausted), skip it for this many seconds instead of re-trying
+    # (and re-failing) it on every call. Per-DAY quota errors escalate to at
+    # least 30 minutes. Pinned (user-selected) provider calls ignore this.
+    provider_cooldown_seconds: int = 120
 
     # anthropic backend (opt-in only; unused unless llm_backend="anthropic").
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")

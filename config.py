@@ -117,8 +117,6 @@ class Settings(BaseSettings):
     # --- Retrieval ---
     search_top_k: int = 50                           # candidates from Qdrant pre-rerank
     rrf_k: int = 60                                  # Reciprocal Rank Fusion constant
-    dense_weight: float = 1.0
-    sparse_weight: float = 1.0
     # HNSW search-time beam width for the dense prefetch. Higher = better
     # recall for a small latency cost (Qdrant's adaptive default is lower).
     qdrant_ef_search: int = 128

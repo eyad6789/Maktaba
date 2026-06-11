@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 from config import settings
 from core.logging import get_logger
 from core.models import Embedding, SearchResult
+from ingest.normalize import normalize_text
 from retrieval.route import Route
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -262,6 +263,7 @@ def _retrieve_global(
     reranker: "Reranker",
     *,
     book_ids: list[str] | None,
+    rerank_top_k: int | None = None,
 ) -> list[SearchResult]:
     summary_candidates = _fused_search(
         embeddings,
@@ -273,14 +275,32 @@ def _retrieve_global(
     if not summary_candidates:
         # No comprehension layer for these books yet — degrade gracefully to a
         # passage search so GLOBAL questions still get an answer.
-        logger.debug("GLOBAL route found no summary nodes; falling back to passages")
+        logger.info("GLOBAL->LOCAL degrade: no summary nodes for these books")
         return _retrieve_local(
-            question, embeddings, store, reranker, book_ids=book_ids, rerank_top_k=None
+            question,
+            embeddings,
+            store,
+            reranker,
+            book_ids=book_ids,
+            rerank_top_k=rerank_top_k,
         )
 
     top_summaries = reranker.rerank(
         question, summary_candidates, top_k=settings.global_summary_keep
     )
+    top_summaries = _apply_score_floor(top_summaries)
+    if not top_summaries:
+        # Every summary scored under the floor — the comprehension layer has
+        # nothing relevant to say, so a passage search serves better than junk.
+        logger.info("GLOBAL->LOCAL degrade: all summary nodes under score floor")
+        return _retrieve_local(
+            question,
+            embeddings,
+            store,
+            reranker,
+            book_ids=book_ids,
+            rerank_top_k=rerank_top_k,
+        )
 
     chapter_parent_ids = [
         s.chunk_id for s in top_summaries if s.level == "chapter_summary"
@@ -326,7 +346,14 @@ def retrieve_for_route(
     """
     embeddings = [embedding, *(extra_embeddings or [])]
     if route == Route.GLOBAL:
-        return _retrieve_global(question, embeddings, store, reranker, book_ids=book_ids)
+        return _retrieve_global(
+            question,
+            embeddings,
+            store,
+            reranker,
+            book_ids=book_ids,
+            rerank_top_k=rerank_top_k,
+        )
     return _retrieve_local(
         question, embeddings, store, reranker, book_ids=book_ids, rerank_top_k=rerank_top_k
     )
@@ -344,11 +371,17 @@ def retrieve(
 ) -> list[SearchResult]:
     """Full retrieval entrypoint: multi-query expansion + routed hybrid search.
 
-    Embeds the question, optionally expands it into bilingual variants (see
+    Normalizes the question (same Arabic folding the indexed text received —
+    otherwise the sparse/lexical channel misses hamza/maqsura/tatweel spelling
+    variants, and the cross-encoder scores a raw query against normalized
+    passages), embeds it, optionally expands it into bilingual variants (see
     :mod:`retrieval.expand`) embedding those too, then runs the routed
-    retrieval with RRF fusion across the variant lists. This is what the API
-    endpoints call; :func:`retrieve_for_route` remains the fusion-free core.
+    retrieval with RRF fusion across the variant lists. Callers pass the RAW
+    question — normalization happens here, once, for every consumer. This is
+    what the API endpoints call; :func:`retrieve_for_route` remains the
+    fusion-free core.
     """
+    question = normalize_text(question)
     embedding = embedder.embed_query(question)
 
     extra: list[Embedding] = []
@@ -357,7 +390,9 @@ def retrieve(
 
         for variant in expand_queries(question):
             try:
-                extra.append(embedder.embed_query(variant))
+                # The LLM may emit unnormalized Arabic (hamza forms, tatweel):
+                # variants must match the index the same way the question does.
+                extra.append(embedder.embed_query(normalize_text(variant)))
             except Exception as exc:  # noqa: BLE001 - a variant is never worth a 500
                 logger.warning("Could not embed variant %r: %s", variant, exc)
 

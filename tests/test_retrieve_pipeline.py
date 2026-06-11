@@ -117,6 +117,73 @@ def test_merge_keep_order_dedupes_by_chunk_id():
     assert [r.chunk_id for r in merged] == ["x", "y", "z"]
 
 
+# -- GLOBAL score floor + degrade (Phase C) -------------------------------------
+
+
+def test_global_floor_drops_weak_summaries_and_skips_their_children(monkeypatch):
+    from config import settings
+
+    # FakeReranker scores = |overlap| / (|query tokens| + 1). For the query
+    # below (7 tokens): bs1 overlaps {is, about, justice} -> 0.375, while cs1
+    # overlaps only {justice} -> 0.125. A floor of 0.2 keeps bs1, drops cs1 —
+    # and cs1's children must not be drilled once it is gone.
+    monkeypatch.setattr(settings, "rerank_min_score", 0.2)
+    store = _full_store()
+    out = retrieve_for_route(
+        "what is the main idea about justice", None, store, FakeReranker(),
+        Route.GLOBAL,
+    )
+    assert {r.chunk_id for r in out} == {"bs1"}
+    assert all(c[0] != "children" for c in store.calls)
+
+
+def test_global_degrades_to_local_when_all_summaries_under_floor(monkeypatch):
+    from config import settings
+
+    # Summaries share no tokens with the query (score 0.0 < floor) while the
+    # passage overlaps heavily (0.75 >= floor): the floor empties the summary
+    # cohort, the route degrades to LOCAL, and the passage still gets through
+    # the same floor. (The floor intentionally applies on the degrade path too.)
+    monkeypatch.setattr(settings, "rerank_min_score", 0.3)
+    store = FakeStore(
+        by_level={
+            "passage": [_sr("p1", "justice fairness and the rule of law")],
+            "chapter_summary": [
+                _sr("cs1", "distant nebula overview",
+                    level="chapter_summary", parent_id="bs1"),
+            ],
+            "book_summary": [
+                _sr("bs1", "astronomy stars galaxies", level="book_summary"),
+            ],
+        },
+    )
+    out = retrieve_for_route(
+        "justice fairness law", None, store, FakeReranker(), Route.GLOBAL,
+    )
+    assert out, "degrade must still answer from passages"
+    assert all(r.level == "passage" for r in out)
+    assert ("search", ("passage",)) in store.calls
+
+
+def test_global_degrade_threads_rerank_top_k(monkeypatch):
+    # No summary nodes at all -> GLOBAL degrades to LOCAL, and the caller's
+    # rerank_top_k must reach the fallback (it used to be hardcoded to None).
+    store = FakeStore(
+        by_level={
+            "passage": [
+                _sr("p1", "justice fairness and the rule of law"),
+                _sr("p2", "justice in society and fairness of law"),
+            ],
+        },
+    )
+    out = retrieve_for_route(
+        "justice fairness law", None, store, FakeReranker(), Route.GLOBAL,
+        rerank_top_k=1,
+    )
+    assert len(out) == 1
+    assert out[0].level == "passage"
+
+
 if __name__ == "__main__":
     from tests._runner import main
 

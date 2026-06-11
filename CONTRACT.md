@@ -111,14 +111,20 @@ class QdrantStore:
 ```python
 def retrieve(question, *, embedder, store, reranker, route,
              book_ids=None, rerank_top_k=None) -> list[SearchResult]
-    # API entrypoint: multi-query expansion (expand_queries -> variant embeddings)
-    # + routed retrieval with RRF fusion across variant candidate lists.
+    # API entrypoint. NORMALIZES the question first (ingest.normalize
+    # .normalize_text — same Arabic folding the index received; callers pass
+    # the raw question), then multi-query expansion (expand_queries -> variant
+    # embeddings, each variant normalized too) + routed retrieval with RRF
+    # fusion across variant candidate lists.
 def retrieve_for_route(question, embedding, store, reranker, route, *,
                        book_ids=None, rerank_top_k=None,
                        extra_embeddings=None) -> list[SearchResult]
     # Routed core (LOCAL passages / GLOBAL summaries+children). After rerank:
     # _apply_score_floor (settings.rerank_min_score) then expand_context
     # (stitch neighbours, overlap-aware, settings.context_window_chunks).
+    # GLOBAL applies the floor to summaries too; an empty summary cohort (none
+    # exist, or all under the floor) degrades to LOCAL with rerank_top_k
+    # threaded through (logged: "GLOBAL->LOCAL degrade").
 def rrf_fuse(result_lists, *, k=60) -> list[SearchResult]          # pure
 def merge_overlapping(a: str, b: str, *, max_overlap=800) -> str   # pure
 def expand_queries(question, *, max_variants=None) -> list[str]    # expand.py; never raises
@@ -262,7 +268,42 @@ DELETE /books/{book_id}   # 409 mid-ingest; Qdrant delete_by_book + registry del
 
 ## scripts/eval.py
 ```python
-# CLI: python -m scripts.eval <questions.jsonl>
-# Each line: {"question": ..., "expect_book_id"/"expect_page": optional}.
-# Runs search+rerank, prints recall@k and (optionally) the generated answer.
+# CLI: python -m scripts.eval <questions.jsonl> [--k 8]
+#      [--ablations full,no-multi-query,no-expansion,no-floor,legacy]
+#      [--set knob=value ...] [--json out.json] [--dump-scores scores.json]
+#      [--expansion-cache PATH] [--model-cache DIR] [--answer] [--legacy]
+# Each line: {"question": ...,                    # required
+#             "expect_book_id"/"expect_page":     # lenient gold tier
+#             "expect_chunk_id":                  # strict gold tier
+#             "lang": "ar"|"en", "qtype": "same"|"cross",  # slicing
+#             "book_ids": [...]}                  # optional retrieval filter
+# Old minimal lines still parse; extra keys ignored. Runs the REAL pipeline
+# (classify_route + retrieve) per config in ONE process; metrics recall@k,
+# truncated MRR@k, nDCG@k, strict@k, mean-results, sliced by lang/qtype.
+# Caches: expansion (JSON, shared across configs/reruns), embeddings + rerank
+# scores (model-cache dir; reruns skip the CPU models).
+
+def compute_metrics(ranks, k) -> dict          # pure; rank>k counts as miss
+def rank_of_first_match(results, expect_book_id, expect_page) -> int|None
+def rank_of_chunk(results, expect_chunk_id) -> int|None
+def override_settings(**overrides)             # contextmanager; restores in finally
+def parse_set_overrides(pairs) -> dict         # "--set name=value" coercion
+```
+
+## scripts/gen_eval.py
+```python
+# CLI: python -m scripts.gen_eval [--out data/eval/questions.jsonl]
+#      [--review-out data/eval/questions_review.jsonl] [--per-book 8]
+#      [--cross-lang-frac 0.25] [--seed 13] [--rpm 8] [--min-chars 200]
+#      [--collection NAME]
+# Golden-set generator: scrolls level=="passage" points from Qdrant (the LIVE
+# corpus, never the PDFs), samples per-book strata, asks the LLM chain for ONE
+# self-contained question per chunk (cross-lang fraction in the OTHER
+# language), quality-filters (whole-word Arabic banned phrases, language gate
+# with mixed-script tolerance, dedup) and writes the eval JSONL + a review
+# copy with source_text.
+def sample_chunks(by_book, *, per_book, seed, min_chars) -> list[dict]  # pure
+def pick_question_lang(chunk_lang, i, cross_frac) -> str                # pure
+def quality_ok(question, chunk, target_lang) -> bool                    # pure
+def build_record(chunk, question, target_lang) -> dict                  # pure
 ```

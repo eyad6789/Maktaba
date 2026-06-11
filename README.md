@@ -255,23 +255,87 @@ make e2e                       # python -m tests.integration.run_e2e
 
 Every question passes through stacked layers, each tunable in `config.py`:
 
-1. **Multi-query fusion** (`enable_multi_query`) — the question is rewritten
+1. **Query normalization** — the question (and every expansion variant) gets
+   the SAME Arabic folding the indexed text received (alef/hamza variants,
+   tatweel; see `ingest/normalize.py`), so the sparse/lexical channel and the
+   reranker compare like with like. Callers pass the raw question;
+   `retrieve()` normalizes once for every consumer.
+2. **Multi-query fusion** (`enable_multi_query`) — the question is rewritten
    into a same-language paraphrase plus an Arabic↔English translation; all
-   variants are searched and the candidate lists fused with RRF. Catches
-   passages worded differently — or written in the other language.
-2. **Hybrid search** — BGE-M3 dense + sparse with RRF fusion per query, with a
+   variants are searched and the candidate lists fused with RRF (`rrf_k`).
+   Catches passages worded differently — or written in the other language.
+3. **Hybrid search** — BGE-M3 dense + sparse with RRF fusion per query, with a
    widened HNSW beam (`qdrant_ef_search`) for better dense recall.
-3. **Routing** — factual (LOCAL: raw passages) vs thematic (GLOBAL: chapter +
+4. **Routing** — factual (LOCAL: raw passages) vs thematic (GLOBAL: chapter +
    book summary nodes, then drill into their source passages). Summary nodes
    are built at ingest when `ENABLE_COMPREHENSION=true`; with
    `SUMMARY_USE_CHAIN=true` they're written by the cloud chain (fast) instead
-   of the local model.
-4. **Cross-encoder reranking** — precision pass over the fused candidates;
-   `rerank_min_score` optionally drops weak matches so they never reach the
-   prompt (and "not in the books" can trigger honestly).
-5. **Small-to-big context expansion** (`context_window_chunks`) — each kept
+   of the local model. A GLOBAL question over books without summary nodes —
+   or whose summaries all fall under the score floor — degrades to LOCAL
+   (logged as `GLOBAL->LOCAL degrade`).
+5. **Cross-encoder reranking** — precision pass over the fused candidates;
+   `rerank_min_score` drops weak matches (summaries and passages alike) so
+   they never reach the prompt (and "not in the books" can trigger honestly).
+6. **Small-to-big context expansion** (`context_window_chunks`) — each kept
    passage is stitched (overlap-aware) with its neighbouring chunks, so the
    answer model reads full context while retrieval stayed precise.
+
+Resilience: providers in the LLM fallback chain that fail with a rate-limit
+error go on cooldown (`provider_cooldown_seconds`, default 120 s; per-day
+quota errors escalate to 30 min) instead of being re-tried — and re-failed —
+on every call. Pinned (user-selected) models bypass the cooldown.
+
+## Evaluation (measure before you tune)
+
+A golden question set and an ablation harness keep retrieval changes honest:
+
+```bash
+# Generate a golden set from the LIVE ingested corpus (questions written by
+# the LLM chain, tagged with their gold book/page/chunk; review & edit freely)
+python -m scripts.gen_eval --per-book 8 --cross-lang-frac 0.25
+
+# Score the full pipeline and ablations over it
+python -m scripts.eval data/eval/questions.jsonl --k 8 \
+    --ablations full,no-multi-query,no-expansion,no-floor,legacy \
+    --json data/eval/report.json
+# Try knob values without editing config:
+python -m scripts.eval data/eval/questions.jsonl --set rrf_k=20
+```
+
+Metrics: `recall@k`, truncated `MRR@k`, `nDCG@k` — on a lenient tier (gold
+book + page in the result's span) and a strict tier (exact gold chunk id) —
+sliced by question language (`ar`/`en`) and `same`/`cross`-language questions.
+Three caches make reruns cheap and comparisons fair: LLM query expansions
+(`data/eval/expansion_cache.json`, committed), query embeddings and
+cross-encoder scores (`data/eval/*_cache.json`, gitignored — a knob-grid rerun
+skips the CPU models entirely). When comparing `full` vs `no-expansion`,
+read the STRICT tier: context expansion widens page spans, which flatters the
+lenient tier.
+
+### Results (35-question bilingual golden set, k=8, 5-book corpus)
+
+| Config | recall@8 | MRR@8 | nDCG@8 | strict@8 | ar | en | cross-lang |
+|---|---|---|---|---|---|---|---|
+| legacy (flat search+rerank) | 65.7% | 0.607 | 0.620 | 62.9% | 68% | 60% | 56% |
+| layered, before query normalization | 88.6% | 0.798 | 0.820 | 62.9% | 96% | 70% | 67% |
+| **layered + query normalization** | **91.4%** | **0.805** | **0.832** | 62.9% | 96% | **80%** | **78%** |
+
+What the ablations showed (see `data/eval/baseline.json`):
+
+- The layered pipeline beats the flat legacy path by **+23 points** recall@8.
+- **Query normalization unlocked multi-query fusion**: before the fix,
+  removing multi-query changed nothing (variant-only finds were RRF-diluted
+  and the translation variant couldn't match the index lexically); after it,
+  the layer contributes +2.8 points recall and +0.024 MRR — and recovered a
+  cross-language miss outright.
+- **Context expansion is a citation layer, not a recall layer**: the strict
+  (chunk-id) tier is identical with it on or off; it widens page spans so
+  answers cite the right pages (+20 points on the lenient tier).
+- Remaining weakness: cross-language questions (78% vs 96% same-language).
+  Next tuning candidates (run with `--set`): `rrf_k=20`, `search_top_k=100`
+  — both attack RRF consensus dilution of translation-variant finds before
+  the top-50 cut.
+
 
 ## Notes
 

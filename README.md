@@ -251,6 +251,28 @@ make e2e                       # python -m tests.integration.run_e2e
   the GLOBAL-route knobs (`global_summary_keep`, `global_child_keep`), and the
   answer/summary models are all in `config.py`. Use `scripts/eval.py` to measure changes.
 
+## Retrieval layers (how a question becomes context)
+
+Every question passes through stacked layers, each tunable in `config.py`:
+
+1. **Multi-query fusion** (`enable_multi_query`) — the question is rewritten
+   into a same-language paraphrase plus an Arabic↔English translation; all
+   variants are searched and the candidate lists fused with RRF. Catches
+   passages worded differently — or written in the other language.
+2. **Hybrid search** — BGE-M3 dense + sparse with RRF fusion per query, with a
+   widened HNSW beam (`qdrant_ef_search`) for better dense recall.
+3. **Routing** — factual (LOCAL: raw passages) vs thematic (GLOBAL: chapter +
+   book summary nodes, then drill into their source passages). Summary nodes
+   are built at ingest when `ENABLE_COMPREHENSION=true`; with
+   `SUMMARY_USE_CHAIN=true` they're written by the cloud chain (fast) instead
+   of the local model.
+4. **Cross-encoder reranking** — precision pass over the fused candidates;
+   `rerank_min_score` optionally drops weak matches so they never reach the
+   prompt (and "not in the books" can trigger honestly).
+5. **Small-to-big context expansion** (`context_window_chunks`) — each kept
+   passage is stitched (overlap-aware) with its neighbouring chunks, so the
+   answer model reads full context while retrieval stayed precise.
+
 ## Notes
 
 - Citations: answers cite sources as `[n]`, mapped back to `{title, author, page}`.

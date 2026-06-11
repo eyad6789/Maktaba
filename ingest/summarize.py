@@ -48,12 +48,21 @@ def _summarize_one(
     from llm import engine  # lazy: keeps this module importable without a model
     from llm.prompts import build_summarize_prompt, summarize_system_prompt
 
+    # An explicit model pins the local server (the fallback chain's rule). When
+    # summary_use_chain is on and the chain is the active backend, pass None so
+    # summaries ride the cloud chain (Gemini/Claude) — orders of magnitude
+    # faster than a CPU model, and the chain still ends locally without keys.
+    if model is None and settings.summary_use_chain and settings.llm_backend == "fallback":
+        effective_model = None
+    else:
+        effective_model = model or settings.summary_model
+
     system = summarize_system_prompt(kind)
     user = build_summarize_prompt(text, kind=kind, lang=lang, title=title)
     out = engine.complete(
         system,
         [{"role": "user", "content": user}],
-        model=model or settings.summary_model,
+        model=effective_model,
         max_tokens=settings.summary_max_tokens,
         temperature=0.3,
     )

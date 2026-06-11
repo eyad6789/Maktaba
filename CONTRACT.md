@@ -99,7 +99,29 @@ class QdrantStore:
                       book_ids: list[str] | None = None) -> list[SearchResult]
         # Query dense + sparse; fuse with RRF (Qdrant Query API prefetch + FusionQuery,
         # or manual RRF with settings.rrf_k). Apply book_id filter when given.
+        # Dense prefetch uses SearchParams(hnsw_ef=settings.qdrant_ef_search).
+    def fetch_neighbors(self, book_id: str, chunk_indices: list[int]) -> list[SearchResult]
+        # Exact-index scroll (book_id + level=passage + integer chunk_index) for
+        # small-to-big context expansion.
+    def delete_by_book(self, book_id: str) -> None
     def count(self) -> int
+```
+
+## retrieval/pipeline.py  (layers) + retrieval/expand.py
+```python
+def retrieve(question, *, embedder, store, reranker, route,
+             book_ids=None, rerank_top_k=None) -> list[SearchResult]
+    # API entrypoint: multi-query expansion (expand_queries -> variant embeddings)
+    # + routed retrieval with RRF fusion across variant candidate lists.
+def retrieve_for_route(question, embedding, store, reranker, route, *,
+                       book_ids=None, rerank_top_k=None,
+                       extra_embeddings=None) -> list[SearchResult]
+    # Routed core (LOCAL passages / GLOBAL summaries+children). After rerank:
+    # _apply_score_floor (settings.rerank_min_score) then expand_context
+    # (stitch neighbours, overlap-aware, settings.context_window_chunks).
+def rrf_fuse(result_lists, *, k=60) -> list[SearchResult]          # pure
+def merge_overlapping(a: str, b: str, *, max_overlap=800) -> str   # pure
+def expand_queries(question, *, max_variants=None) -> list[str]    # expand.py; never raises
 ```
 
 ## retrieval/rerank.py

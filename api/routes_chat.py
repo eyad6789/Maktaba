@@ -148,7 +148,7 @@ def chat_stream(request: Request, req: ChatStreamRequest) -> StreamingResponse:
         from llm.answer import extract_citations
         from llm.chat import build_chat_messages, condense_query
         from llm.errors import AllProvidersFailedError, ProviderError
-        from retrieval.pipeline import retrieve_for_route
+        from retrieval.pipeline import retrieve
         from retrieval.route import Route, classify_route, coerce_route
 
         try:
@@ -158,13 +158,12 @@ def chat_stream(request: Request, req: ChatStreamRequest) -> StreamingResponse:
                 else message
             )
             route = coerce_route(req.route) or classify_route(search_query, book_ids)
-            embedding = embedder.embed_query(search_query)
             rerank_top_k = (
                 req.top_k if req.top_k and req.top_k > 0 else settings.rerank_top_k
             )
-            reranked = retrieve_for_route(
-                search_query, embedding, store, reranker, route,
-                book_ids=book_ids, rerank_top_k=rerank_top_k,
+            reranked = retrieve(
+                search_query, embedder=embedder, store=store, reranker=reranker,
+                route=route, book_ids=book_ids, rerank_top_k=rerank_top_k,
             )
 
             # Sources are shown to the user before generation begins — on a

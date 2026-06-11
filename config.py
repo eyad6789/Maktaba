@@ -119,6 +119,31 @@ class Settings(BaseSettings):
     rrf_k: int = 60                                  # Reciprocal Rank Fusion constant
     dense_weight: float = 1.0
     sparse_weight: float = 1.0
+    # HNSW search-time beam width for the dense prefetch. Higher = better
+    # recall for a small latency cost (Qdrant's adaptive default is lower).
+    qdrant_ef_search: int = 128
+
+    # Multi-query fusion (RAG-Fusion): rewrite the question into a few search
+    # variants — a same-language paraphrase plus a cross-language translation
+    # (Arabic <-> English) — retrieve for each, and fuse the candidate lists
+    # with RRF before reranking. Big recall win on a bilingual corpus.
+    enable_multi_query: bool = True
+    multi_query_variants: int = 2                    # extra queries beside the original
+    # Generate variants through the cloud fallback chain (fast, high quality)
+    # instead of the local utility model. Only applies when llm_backend=fallback;
+    # any failure degrades to retrieving with the original query alone.
+    expansion_use_chain: bool = True
+
+    # Small-to-big context expansion: after reranking, stitch each kept passage
+    # together with its neighbouring chunks (overlap-aware) so the answer model
+    # sees fuller context while retrieval stays precise. 0 disables.
+    context_window_chunks: int = 1                   # neighbours per side
+    context_expand_max_results: int = 4              # only the best N get expanded
+
+    # Drop reranked passages scoring below this (0..1 cross-encoder score).
+    # 0.0 keeps everything (original behaviour). Modest values (~0.05) trim
+    # noise sources from the prompt and let "not found" trigger honestly.
+    rerank_min_score: float = 0.0
 
     # GLOBAL (whole-book / thematic) route: retrieve chapter+book summary nodes,
     # keep the best few, then drill into their child passages. Tuned small so the
@@ -156,6 +181,11 @@ class Settings(BaseSettings):
     enable_comprehension: bool = False
     enable_heading_detection: bool = False           # heuristic fallback when no TOC
     summary_model: str = "qwen2.5:3b-instruct-q4_K_M"  # small/fast; = utility_model
+    # Build summaries through the cloud fallback chain (Gemini/Claude) instead
+    # of pinning the local summary_model. Only applies when llm_backend=fallback;
+    # with no cloud keys the chain still ends at the local model. This is what
+    # makes the comprehension layer fast enough to enable on CPU-only boxes.
+    summary_use_chain: bool = True
     summary_map_batch_tokens: int = 2500             # map step batches up to this
     summary_max_tokens: int = 768                    # length cap per summary node
     summary_min_section_tokens: int = 300            # skip summarizing tiny sections

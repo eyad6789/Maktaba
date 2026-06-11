@@ -184,18 +184,18 @@ def _build_summary_nodes(
 ) -> list[Chunk]:
     """Build the comprehension layer (chapter + book summaries) for one book.
 
-    Detects structure from the PDF table of contents and summarizes with the
-    small ``summary_model``. Best-effort: any failure (no model server, etc.)
-    logs and returns ``[]`` so the book still ingests with its raw passages.
+    Detects structure from the PDF table of contents and summarizes via
+    :mod:`ingest.summarize`, which picks the model itself: the cloud fallback
+    chain when ``summary_use_chain`` applies, else the small ``summary_model``.
+    Best-effort: any failure (no model server, etc.) logs and returns ``[]``
+    so the book still ingests with its raw passages.
     """
     try:
         from ingest import structure, summarize
 
         toc = structure.extract_toc(doc)
         sections = structure.detect_structure(pages, toc, num_pages)
-        nodes = summarize.build_summary_nodes(
-            sections, chunks, book, model=settings.summary_model
-        )
+        nodes = summarize.build_summary_nodes(sections, chunks, book)
         logger.info(
             "Comprehension layer: %d summary node(s) for %s",
             len(nodes),

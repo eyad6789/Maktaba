@@ -97,16 +97,21 @@ class QdrantStore:
         self._ensure_payload_indexes()
 
     def _ensure_payload_indexes(self) -> None:
-        """Create keyword payload indexes for the configured filter keys."""
+        """Create keyword + integer payload indexes for the filter keys."""
         from qdrant_client import models as qm
 
         client = self.client
-        for key in schema.INDEXED_PAYLOAD_KEYS:
+        wanted = [
+            (key, qm.PayloadSchemaType.KEYWORD) for key in schema.INDEXED_PAYLOAD_KEYS
+        ] + [
+            (key, qm.PayloadSchemaType.INTEGER) for key in schema.INDEXED_INTEGER_KEYS
+        ]
+        for key, field_schema in wanted:
             try:
                 client.create_payload_index(
                     collection_name=self.collection,
                     field_name=key,
-                    field_schema=qm.PayloadSchemaType.KEYWORD,
+                    field_schema=field_schema,
                 )
             except Exception as exc:  # index may already exist — tolerate it
                 logger.debug("Payload index for %r not created: %s", key, exc)
@@ -248,6 +253,9 @@ class QdrantStore:
                 using=schema.DENSE_VECTOR,
                 limit=top_k,
                 filter=query_filter,
+                # Wider HNSW beam at search time: better dense recall for a
+                # small latency cost (the reranker restores precision anyway).
+                params=qm.SearchParams(hnsw_ef=settings.qdrant_ef_search),
             ),
             qm.Prefetch(
                 query=sparse_vector,
@@ -319,6 +327,51 @@ class QdrantStore:
             "fetch_children returned %d children for %d parent(s)",
             len(results),
             len(parent_ids),
+        )
+        return results
+
+    def fetch_neighbors(
+        self,
+        book_id: str,
+        chunk_indices: list[int],
+    ) -> list[SearchResult]:
+        """Fetch one book's passages by exact ``chunk_index`` values.
+
+        Used for small-to-big context expansion: the pipeline asks for the
+        indices adjacent to each kept passage and stitches the texts together.
+        Scans by the indexed ``book_id`` + integer ``chunk_index`` payload keys
+        (no vector search). Returned results carry ``score=0.0``.
+        """
+        if not chunk_indices:
+            return []
+
+        from qdrant_client import models as qm
+
+        scroll_filter = qm.Filter(
+            must=[
+                qm.FieldCondition(key="book_id", match=qm.MatchValue(value=book_id)),
+                qm.FieldCondition(key="level", match=qm.MatchValue(value="passage")),
+                qm.FieldCondition(
+                    key="chunk_index",
+                    match=qm.MatchAny(any=sorted(set(chunk_indices))),
+                ),
+            ]
+        )
+        points, _ = self.client.scroll(
+            collection_name=self.collection,
+            scroll_filter=scroll_filter,
+            limit=len(set(chunk_indices)),
+            with_payload=True,
+            with_vectors=False,
+        )
+        results = [
+            self._point_to_result(str(p.id), 0.0, p.payload or {}) for p in points
+        ]
+        logger.debug(
+            "fetch_neighbors returned %d/%d passages for book %s",
+            len(results),
+            len(set(chunk_indices)),
+            book_id,
         )
         return results
 

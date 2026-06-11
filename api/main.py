@@ -259,7 +259,7 @@ def query(request: Request, req: QueryRequest) -> QueryResponse:
     # Lazy import: keeps heavy/LLM deps out of module import.
     from llm.answer import answer_question
     from llm.errors import ProviderError
-    from retrieval.pipeline import retrieve_for_route
+    from retrieval.pipeline import retrieve
     from retrieval.route import classify_route, coerce_route
 
     embedder = _get_embedder(request)
@@ -269,10 +269,9 @@ def query(request: Request, req: QueryRequest) -> QueryResponse:
     # Route the question (whole-book/thematic vs factual), then retrieve over the
     # appropriate index levels. An explicit req.route overrides the classifier.
     route = coerce_route(req.route) or classify_route(question, req.book_ids)
-    embedding = embedder.embed_query(question)
     rerank_top_k = req.top_k if req.top_k and req.top_k > 0 else settings.rerank_top_k
-    reranked = retrieve_for_route(
-        question, embedding, store, reranker, route,
+    reranked = retrieve(
+        question, embedder=embedder, store=store, reranker=reranker, route=route,
         book_ids=req.book_ids, rerank_top_k=rerank_top_k,
     )
 
@@ -312,7 +311,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
     # Lazy import: keeps heavy/LLM deps out of module import.
     from llm.chat import chat_answer, condense_query
     from llm.errors import ProviderError
-    from retrieval.pipeline import retrieve_for_route
+    from retrieval.pipeline import retrieve
     from retrieval.route import classify_route, coerce_route
 
     embedder = _get_embedder(request)
@@ -330,10 +329,9 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
 
     # Route on the (condensed) standalone query, then retrieve over levels.
     route = coerce_route(req.route) or classify_route(search_query, req.book_ids)
-    embedding = embedder.embed_query(search_query)
     rerank_top_k = req.top_k if req.top_k and req.top_k > 0 else settings.rerank_top_k
-    reranked = retrieve_for_route(
-        search_query, embedding, store, reranker, route,
+    reranked = retrieve(
+        search_query, embedder=embedder, store=store, reranker=reranker, route=route,
         book_ids=req.book_ids, rerank_top_k=rerank_top_k,
     )
 

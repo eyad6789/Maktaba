@@ -26,7 +26,11 @@ os.environ.setdefault("EMBEDDING_DEVICE", "cpu")
 os.environ.setdefault("RERANKER_DEVICE", "cpu")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 os.environ.setdefault("OCR_BACKEND", "tesseract")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6380/0")
+# Dedicated test/dev redis (ports 6379/6380 belong to other projects' stacks
+# on the dev box): docker run -d --name pdfread-redis -p 6381:6379 redis:7-alpine
+# Database 1, NOT 0: the suite enqueues real RQ jobs (upload test), and on db 0
+# a live dev worker would pick them up after the suite deleted its temp files.
+os.environ.setdefault("REDIS_URL", "redis://localhost:6381/1")
 os.environ.setdefault("REGISTRY_DB", str(_TMP / "registry.db"))
 os.environ.setdefault("CONVERSATIONS_DB", str(_TMP / "conversations.db"))
 os.environ.setdefault("UPLOADS_DIR", str(_TMP / "uploads"))
@@ -36,6 +40,10 @@ os.environ.setdefault("LOG_LEVEL", "WARNING")
 # engine before the fakes are installed, breaking determinism (and the
 # comprehension test, which expects to be the only book with summary nodes).
 os.environ.setdefault("ENABLE_COMPREHENSION", "false")
+# Pin multi-query expansion OFF: variants come from the LLM engine, which the
+# suite fakes with canned text — those lines would become junk search queries
+# and perturb the deterministic retrieval assertions.
+os.environ.setdefault("ENABLE_MULTI_QUERY", "false")
 
 from config import settings  # noqa: E402
 from core.models import BookMeta, PageContent, PageKind  # noqa: E402

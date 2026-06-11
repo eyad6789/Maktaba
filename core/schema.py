@@ -34,3 +34,7 @@ PAYLOAD_FIELDS = (
 # Payload keys we create indexes on for fast filtering. `level` enables
 # level-routed retrieval; `parent_id` enables fetching a summary's children.
 INDEXED_PAYLOAD_KEYS = ("book_id", "lang", "level", "parent_id")
+
+# Integer payload indexes (separate list: different field schema). `chunk_index`
+# enables fetching a passage's neighbours for small-to-big context expansion.
+INDEXED_INTEGER_KEYS = ("chunk_index",)

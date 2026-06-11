@@ -43,7 +43,15 @@
     "على فراش موته، بأيّ نوعٍ من الأشجار شبّه فارس كرامة القلبَ بعواطفه المتفرّعة؟",
     "To what tree did Salma's father compare the heart with its branching emotions as he lay on his deathbed?"
   ],
+  "v2|باي شجرة شبّه والد سلمي القلبَ وعواطفه المتشعّبة وهو علي فراش الموت؟": [
+    "على فراش موته، بأيّ نوعٍ من الأشجار شبّه فارس كرامة القلبَ بعواطفه المتفرّعة؟",
+    "To what tree did Salma's father compare the heart with its branching emotions as he lay on his deathbed?"
+  ],
   "v2|بماذا شبّهت سلمى نفسها حين قالت إن مال والدها أنزلها إلى ساحة النخّاسين؟": [
+    "حين قالت سلمى إن ثروة أبيها ساقتها إلى سوق النخّاسين، بأيّ صفةٍ وصفت نفسها؟",
+    "How did Salma describe herself when she said her father's wealth had brought her down to the slave-traders' market?"
+  ],
+  "v2|بماذا شبّهت سلمي نفسها حين قالت ان مال والدها انزلها الي ساحة النخّاسين؟": [
     "حين قالت سلمى إن ثروة أبيها ساقتها إلى سوق النخّاسين، بأيّ صفةٍ وصفت نفسها؟",
     "How did Salma describe herself when she said her father's wealth had brought her down to the slave-traders' market?"
   ],
@@ -51,7 +59,15 @@
     "في حديثه عن الانتفاع بالزمن، ما الوصف الذي أطلقه أحمد أمين على الزمن حين قارنه بالخشب الخام في يد النجار والحديد في يد الحداد؟",
     "What did Ahmad Amin call time when he likened it to wood in a carpenter's hand and iron in a blacksmith's?"
   ],
+  "v2|بماذا وصف احمد امين الزمن حين شبّهه بالخشب في يد النجار والحديد في يد الحداد؟": [
+    "في حديثه عن الانتفاع بالزمن، ما الوصف الذي أطلقه أحمد أمين على الزمن حين قارنه بالخشب الخام في يد النجار والحديد في يد الحداد؟",
+    "What did Ahmad Amin call time when he likened it to wood in a carpenter's hand and iron in a blacksmith's?"
+  ],
   "v2|بمن شبّه أحمد أمين الإنسان الذي يكوّن عاداته الصالحة في صغره فتتصلب كما يتصلب الجبس؟": [
+    "حين تحدث عن غرس العادات منذ الطفولة، بأي صانعٍ مثّل أحمد أمين الإنسان وعاداته التي تجمد كالجبس اللين؟",
+    "To whom did Ahmad Amin liken a person forming good habits in childhood that harden like plaster?"
+  ],
+  "v2|بمن شبّه احمد امين الانسان الذي يكوّن عاداته الصالحة في صغره فتتصلب كما يتصلب الجبس؟": [
     "حين تحدث عن غرس العادات منذ الطفولة، بأي صانعٍ مثّل أحمد أمين الإنسان وعاداته التي تجمد كالجبس اللين؟",
     "To whom did Ahmad Amin liken a person forming good habits in childhood that harden like plaster?"
   ],
@@ -79,6 +95,30 @@
     "في كتاب الأيام لطه حسين، مَن هم الأعلام الثلاثة الذين عدّهم الفتى في خطابه أصحاب الفضل في نهضة مصر ويقظتها؟",
     "In Taha Hussein's al-Ayyam, who are the three men our protagonist claimed in his speech that Egypt owes its awakening to?"
   ],
+  "v2|في الاجنحة المتكسرة، من الذي يدفع ثمن المجد والعظمة والشهرة التي يشتريها الرجل؟": [
+    "بحسب قول سلمى، حين يشتري الرجل المجد والعظمة والشهرة فمن يتحمّل ثمنها؟",
+    "In The Broken Wings, who pays the price for the glory, greatness, and fame that man buys?"
+  ],
+  "v2|في الايام لطه حسين، ايُّ ايام الاسبوع كان يُسمّي \"يوم البطون\" عند الطلاب وصديقهم الشيخ؟": [
+    "في كتاب الأيام لطه حسين، ما اليوم الذي عُرف بيوم الأكل الوفير في حياة الطلاب وشيخهم الصديق؟",
+    "In Taha Hussein's al-Ayyam, which day of the week was called the 'day of bellies' (feasting day) for the students and their Sheikh friend?"
+  ],
+  "v2|في الايام لطه حسين، بماذا ردّ الاستاذ الايطالي نالينو علي الطلاب الذين اضربوا عن درسه وتركوه وحيدًا؟": [
+    "في كتاب الأيام لطه حسين، ما الجملة التي قالها الأستاذ نالينو لطلابه حين خرجوا من غرفة الدرس احتجاجًا وتركوه بمفرده؟",
+    "In Taha Hussein's al-Ayyam, how did the Italian professor Nallino respond to the students who walked out of his lesson and left him alone?"
+  ],
+  "v2|في الايام لطه حسين، لماذا مُنع الصاحبان من النزول الي ارض الوطن حين بلغت سفينتهما ثغر الاسكندرية؟": [
+    "في كتاب الأيام لطه حسين، ما السبب الذي جعل السلطات تردّ الصاحبين عن مغادرة السفينة عند وصولهما إلى ميناء الإسكندرية؟",
+    "In Taha Hussein's al-Ayyam, why were the two companions prevented from disembarking onto their homeland's soil when their ship reached the port of Alexandria?"
+  ],
+  "v2|في الايام لطه حسين، ما الوباء الذي اجتاح مصر صيف سنة 1902 وفتك باهلها فتكًا ذريعًا؟": [
+    "في كتاب الأيام لطه حسين، ما اسم الوباء الذي هبط على مصر في صيف عام 1902 وأهلك كثيرًا من سكانها ومحا أسرًا كاملة؟",
+    "In Taha Hussein's al-Ayyam, what epidemic swept through Egypt in the summer of 1902 and ravaged its people?"
+  ],
+  "v2|في الايام لطه حسين، من الرجال الثلاثة الذين زعم صاحبنا في خطبته ان مصر مدينة لهم بيقظتها؟": [
+    "في كتاب الأيام لطه حسين، مَن هم الأعلام الثلاثة الذين عدّهم الفتى في خطابه أصحاب الفضل في نهضة مصر ويقظتها؟",
+    "In Taha Hussein's al-Ayyam, who are the three men our protagonist claimed in his speech that Egypt owes its awakening to?"
+  ],
   "v2|في حديث عيسى بن هشام، بِمَ شبّه الصديق ما تتحلّى به العاهرة من القلائد والأساور والخلاخل؟": [
     "في حديث عيسى بن هشام، ما الذي اعتبره الصديق حقيقةَ ما على العاهرة من الحليّ والجواهر؟",
     "In Hadith Isa ibn Hisham, to what does the friend liken the necklaces, bracelets, and anklets the courtesan adorns herself with?"
@@ -103,7 +143,35 @@
     "في حديث عيسى بن هشام، من كان فعلًا ذلك المعمَّم الذي زعم الغربيون أنه شيخ يكتب لهم من القرآن في الجناح المصري بمعرض باريس؟",
     "In Hadith Isa ibn Hisham, who did the turbaned 'sheikh of the Muslims' writing snippets of the 'Quran of Muhammad' for visitors at the Egyptian pavilion in Paris turn out to be?"
   ],
+  "v2|في حديث عيسي بن هشام، بِمَ شبّه الصديق ما تتحلّي به العاهرة من القلايد والاساور والخلاخل؟": [
+    "في حديث عيسى بن هشام، ما الذي اعتبره الصديق حقيقةَ ما على العاهرة من الحليّ والجواهر؟",
+    "In Hadith Isa ibn Hisham, to what does the friend liken the necklaces, bracelets, and anklets the courtesan adorns herself with?"
+  ],
+  "v2|في حديث عيسي بن هشام، بِمَ علّق احد الجالسين ساخرًا علي نبا وفاة نقيب الاشراف من جهة اسعار البورصة؟": [
+    "في حديث عيسى بن هشام، ماذا قال أحد الحاضرين متهكّمًا عن أسعار البورصة عند سماع خبر موت نقيب الأشراف؟",
+    "In Hadith Isa ibn Hisham, how does one of those present sarcastically comment on the stock-market prices upon hearing of the death of the Naqib al-Ashraf?"
+  ],
+  "v2|في حديث عيسي بن هشام، ما العبارة التي قال الطبيب انها كُتبت علي قبر احد قدماء القوّاد عن قوة الاطباء؟": [
+    "في حديث عيسى بن هشام، بأيّ كلماتٍ رُوي أنّ قبر قائدٍ قديم نُقش يشكو فيه من فعل الأطباء كما ذكر الطبيب؟",
+    "In Hadith Isa ibn Hisham, what phrase does the doctor say was inscribed on the grave of one of the ancient commanders about the power of physicians?"
+  ],
+  "v2|في حديث عيسي بن هشام، ماذا فعلت الديكة في باريس من شدّة اضواء الليل حين جاب عيسي بن هشام طرقاتها؟": [
+    "في حديث عيسى بن هشام، ما الذي أخذت الديكة تفعله في باريس بسبب شدة أنوار الليل عندما طاف عيسى بن هشام في شوارعها؟",
+    "In Hadith Isa ibn Hisham, what did the roosters in Paris do because of the intensity of the night lights when Isa ibn Hisham roamed its streets?"
+  ],
+  "v2|في حديث عيسي بن هشام، من الذي دبّر لمحمد علي باشا قطع دابر المماليك في ساعة واحدة؟": [
+    "في حديث عيسى بن هشام، من صاحب الحيلة التي استُؤصل بها المماليك في ساعة واحدة في عهد محمد علي باشا؟",
+    "In Hadith Isa ibn Hisham, who devised for Muhammad Ali Pasha the elimination of the Mamluks in a single hour?"
+  ],
+  "v2|في حديث عيسي بن هشام، من كان في حقيقة الامر ذلك 'شيخ المسلمين' الذي كتب للزوّار شييًا من 'قران محمد' في المعرض المصري بباريس؟": [
+    "في حديث عيسى بن هشام، من كان فعلًا ذلك المعمَّم الذي زعم الغربيون أنه شيخ يكتب لهم من القرآن في الجناح المصري بمعرض باريس؟",
+    "In Hadith Isa ibn Hisham, who did the turbaned 'sheikh of the Muslims' writing snippets of the 'Quran of Muhammad' for visitors at the Egyptian pavilion in Paris turn out to be?"
+  ],
   "v2|كم رغيفًا كانت جراية الشيخ الفتى التي كان الصبي وصاحبه يأخذانها من رواق الحنفية بعد درس الفقه في الأيام لطه حسين؟": [
+    "في كتاب الأيام لطه حسين، كم عدد الأرغفة التي كان الصبي وصاحبه يأخذانها جرايةً من رواق الحنفية بعد درس الفقه؟",
+    "In Taha Hussein's al-Ayyam, how many loaves of bread made up the ration the boy and his companion took from the Hanafi gallery?"
+  ],
+  "v2|كم رغيفًا كانت جراية الشيخ الفتي التي كان الصبي وصاحبه ياخذانها من رواق الحنفية بعد درس الفقه في الايام لطه حسين؟": [
     "في كتاب الأيام لطه حسين، كم عدد الأرغفة التي كان الصبي وصاحبه يأخذانها جرايةً من رواق الحنفية بعد درس الفقه؟",
     "In Taha Hussein's al-Ayyam, how many loaves of bread made up the ration the boy and his companion took from the Hanafi gallery?"
   ],
@@ -111,7 +179,15 @@
     "ما الذي جعل أحمد أمين يضع الإحسان في مرتبة أعلى من العدل، وأي الواجبين يفرضه القانون وأيهما يفرضه الضمير؟",
     "Why does Ahmad Amin rank benevolence above justice, and which of them is enforced by law versus by conscience?"
   ],
+  "v2|لماذا عدّ احمد امين الاحسان ارقي من العدل، وايهما ينفّذه القانون وايهما يُنفّذه الضمير؟": [
+    "ما الذي جعل أحمد أمين يضع الإحسان في مرتبة أعلى من العدل، وأي الواجبين يفرضه القانون وأيهما يفرضه الضمير؟",
+    "Why does Ahmad Amin rank benevolence above justice, and which of them is enforced by law versus by conscience?"
+  ],
   "v2|ما الذي حدث للمعدة والقلب بعد أن أضربت أعضاء الجسد عن العمل في حكاية أحمد أمين؟": [
+    "في حكاية أعضاء الجسم التي يرويها أحمد أمين، ماذا أصاب المعدة والقلب بعدما امتنعت الأعضاء عن أداء عملها؟",
+    "What happened to the stomach and heart after the body's organs went on strike in Ahmad Amin's parable?"
+  ],
+  "v2|ما الذي حدث للمعدة والقلب بعد ان اضربت اعضاء الجسد عن العمل في حكاية احمد امين؟": [
     "في حكاية أعضاء الجسم التي يرويها أحمد أمين، ماذا أصاب المعدة والقلب بعدما امتنعت الأعضاء عن أداء عملها؟",
     "What happened to the stomach and heart after the body's organs went on strike in Ahmad Amin's parable?"
   ],
@@ -119,7 +195,15 @@
     "بحسب الأجنحة المتكسرة، أيّ شيء يعدّه جبران الحريّة الوحيدة الموجودة في هذا العالم؟",
     "In The Broken Wings, what does Gibran describe as the only freedom in this world?"
   ],
+  "v2|ما الذي يصفه جبران في الاجنحة المتكسرة بانه الحرية الوحيدة في هذا العالم؟": [
+    "بحسب الأجنحة المتكسرة، أيّ شيء يعدّه جبران الحريّة الوحيدة الموجودة في هذا العالم؟",
+    "In The Broken Wings, what does Gibran describe as the only freedom in this world?"
+  ],
   "v2|ماذا حدث لسلمى كرامة عند الفجر بعد خمسة أعوام من زواجها بمنصور بك غالب؟": [
+    "بعد خمس سنوات من اقترانها بمنصور بك غالب، بماذا رُزقت سلمى كرامة مع طلوع الفجر؟",
+    "What happened to Salma Karama at dawn, five years after her marriage to Mansour Bek Ghalib?"
+  ],
+  "v2|ماذا حدث لسلمي كرامة عند الفجر بعد خمسة اعوام من زواجها بمنصور بك غالب؟": [
     "بعد خمس سنوات من اقترانها بمنصور بك غالب، بماذا رُزقت سلمى كرامة مع طلوع الفجر؟",
     "What happened to Salma Karama at dawn, five years after her marriage to Mansour Bek Ghalib?"
   ],
@@ -127,7 +211,15 @@
     "في حديثه عن الزهد، بماذا ردّ النبي ﷺ حين مُدح عنده رجل انقطع للعبادة وترك العمل، حسب رواية أحمد أمين؟",
     "What did the Prophet say about the man praised for praying all night, fasting by day, and devoting himself to worship, as Ahmad Amin relates?"
   ],
+  "v2|ماذا قال النبي ﷺ عن الرجل الذي مُدح بانه يقوم الليل ويصوم النهار وينقطع للعبادة، كما ينقل احمد امين؟": [
+    "في حديثه عن الزهد، بماذا ردّ النبي ﷺ حين مُدح عنده رجل انقطع للعبادة وترك العمل، حسب رواية أحمد أمين؟",
+    "What did the Prophet say about the man praised for praying all night, fasting by day, and devoting himself to worship, as Ahmad Amin relates?"
+  ],
   "v2|ماذا قال فارس كرامة لابنته سلمى عن مستقبلها حين عاد من دار المطران؟": [
+    "عند رجوعه من دار المطران، بأيّ كلماتٍ أنبأ فارس كرامة ابنته سلمى بما ينتظرها؟",
+    "What did Faris Karama tell his daughter Salma about her future when he returned from the bishop's house?"
+  ],
+  "v2|ماذا قال فارس كرامة لابنته سلمي عن مستقبلها حين عاد من دار المطران؟": [
     "عند رجوعه من دار المطران، بأيّ كلماتٍ أنبأ فارس كرامة ابنته سلمى بما ينتظرها؟",
     "What did Faris Karama tell his daughter Salma about her future when he returned from the bishop's house?"
   ],
@@ -135,7 +227,15 @@
     "بحسب مذهب السعادة كما يعرضه أحمد أمين، ما المعنى الذي تنطوي عليه كلمة السعادة؟",
     "What do the proponents of the doctrine of happiness mean by the vague word 'happiness' according to Ahmad Amin?"
   ],
+  "v2|ماذا يقصد اصحاب مذهب السعادة بكلمة 'السعادة' الغامضة عند احمد امين؟": [
+    "بحسب مذهب السعادة كما يعرضه أحمد أمين، ما المعنى الذي تنطوي عليه كلمة السعادة؟",
+    "What do the proponents of the doctrine of happiness mean by the vague word 'happiness' according to Ahmad Amin?"
+  ],
   "v2|من مؤلِّفة كتاب «انضباط التركيز» التي ترى أنّ التركيز انضباطٌ يُدرَّب ويُصان لا سِمةٌ فطرية يولد بها المرء؟": [
+    "من الذي كتب «انضباط التركيز» واعتبر أنّ التركيز مهارةٌ تُكتسب بالتدريب لا طبعٌ يولد به الإنسان؟",
+    "Who is the author of 'The Discipline of Focus', who maintains that focus is a discipline to be trained and protected rather than an innate trait one is born with?"
+  ],
+  "v2|من مولِّفة كتاب «انضباط التركيز» التي تري انّ التركيز انضباطٌ يُدرَّب ويُصان لا سِمةٌ فطرية يولد بها المرء؟": [
     "من الذي كتب «انضباط التركيز» واعتبر أنّ التركيز مهارةٌ تُكتسب بالتدريب لا طبعٌ يولد به الإنسان؟",
     "Who is the author of 'The Discipline of Focus', who maintains that focus is a discipline to be trained and protected rather than an innate trait one is born with?"
   ]

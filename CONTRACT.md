@@ -64,7 +64,10 @@ class BGEM3Embedder:
     def __init__(self, model_name=settings.embedding_model, device=settings.embedding_device,
                  use_fp16=settings.embedding_use_fp16): ...   # lazy-load FlagEmbedding.BGEM3FlagModel
     def embed_documents(self, texts: list[str]) -> list[Embedding]
-    def embed_query(self, text: str) -> Embedding
+    def embed_queries(self, texts: list[str]) -> list[Embedding]
+        # ONE batched model call — retrieve() embeds question + all expansion
+        # variants together (~2x faster than serial embed_query calls on CPU).
+    def embed_query(self, text: str) -> Embedding   # = embed_queries([text])[0]
     # Use BGEM3FlagModel.encode(..., return_dense=True, return_sparse=True).
     # Convert lexical_weights dict -> SparseVector(indices, values).
 ```

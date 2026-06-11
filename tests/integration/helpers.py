@@ -61,6 +61,9 @@ class FakeEmbedder:
     def embed_documents(self, texts: list[str]) -> list[Embedding]:
         return [self._embed_one(t) for t in texts]
 
+    def embed_queries(self, texts: list[str]) -> list[Embedding]:
+        return [self._embed_one(t) for t in texts]
+
     def embed_query(self, text: str) -> Embedding:
         return self._embed_one(text)
 

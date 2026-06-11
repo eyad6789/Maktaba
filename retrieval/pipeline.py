@@ -382,19 +382,31 @@ def retrieve(
     fusion-free core.
     """
     question = normalize_text(question)
-    embedding = embedder.embed_query(question)
 
-    extra: list[Embedding] = []
+    # Expansion runs BEFORE any embedding so the question + every variant can
+    # be embedded in ONE batched model call — on CPU that is ~2x faster than
+    # the serial embed-original / expand / embed-each-variant order.
+    texts = [question]
     if settings.enable_multi_query:
         from retrieval.expand import expand_queries  # lazy: pulls llm.engine
 
         for variant in expand_queries(question):
-            try:
-                # The LLM may emit unnormalized Arabic (hamza forms, tatweel):
-                # variants must match the index the same way the question does.
-                extra.append(embedder.embed_query(normalize_text(variant)))
-            except Exception as exc:  # noqa: BLE001 - a variant is never worth a 500
-                logger.warning("Could not embed variant %r: %s", variant, exc)
+            # The LLM may emit unnormalized Arabic (hamza forms, tatweel):
+            # variants must match the index the same way the question does.
+            texts.append(normalize_text(variant))
+
+    try:
+        embeddings = embedder.embed_queries(texts)
+    except Exception as exc:  # noqa: BLE001 - variants are never worth a 500
+        if len(texts) == 1:
+            raise
+        logger.warning(
+            "Batched embed of %d quer(ies) failed (%s); retrying question alone",
+            len(texts),
+            exc,
+        )
+        embeddings = embedder.embed_queries([question])
+    embedding, extra = embeddings[0], list(embeddings[1:])
 
     return retrieve_for_route(
         question,

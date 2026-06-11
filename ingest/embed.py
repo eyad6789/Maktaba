@@ -100,9 +100,19 @@ class BGEM3Embedder:
             )
         return embeddings
 
+    def embed_queries(self, texts: list[str]) -> list[Embedding]:
+        """Embed several query strings in ONE batched model call.
+
+        On CPU a single encode of N short texts costs far less than N serial
+        calls (the model amortizes tokenization + forward overhead), so the
+        retrieval pipeline embeds the question and all its expansion variants
+        together. Index alignment with ``texts`` is preserved.
+        """
+        return self.embed_documents(texts)
+
     def embed_query(self, text: str) -> Embedding:
         """Embed a single query string into a dense + sparse vector."""
-        results = self.embed_documents([text])
+        results = self.embed_queries([text])
         if not results:
             # Defensive: only happens for an explicitly empty input list, which
             # cannot occur here since we always pass exactly one element.

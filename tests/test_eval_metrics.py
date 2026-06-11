@@ -306,10 +306,15 @@ def test_memoize_expansion_keys_include_variant_count() -> None:
 class _CountingEmbedder:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.batches: list[list[str]] = []
+
+    def embed_queries(self, texts: list[str]) -> list[str]:
+        self.batches.append(list(texts))
+        self.calls.extend(texts)
+        return [f"emb({t})" for t in texts]
 
     def embed_query(self, text: str) -> str:
-        self.calls.append(text)
-        return f"emb({text})"
+        return self.embed_queries([text])[0]
 
 
 class _CountingReranker:
@@ -375,11 +380,14 @@ def test_memo_embedder_persists_and_reloads(tmp_path) -> None:
         def __init__(self) -> None:
             self.calls = 0
 
-        def embed_query(self, text: str) -> Embedding:
-            self.calls += 1
-            return Embedding(
-                dense=[0.5, 0.25], sparse=SparseVector(indices=[3], values=[1.0]),
-            )
+        def embed_queries(self, texts: list[str]) -> list[Embedding]:
+            self.calls += len(texts)
+            return [
+                Embedding(
+                    dense=[0.5, 0.25], sparse=SparseVector(indices=[3], values=[1.0]),
+                )
+                for _ in texts
+            ]
 
     path = tmp_path / "embed_cache.json"
     inner = EmbeddingEmbedder()
@@ -426,3 +434,16 @@ def test_memo_wrappers_ignore_corrupt_cache_files(tmp_path) -> None:
     assert embedder.embed_query("q") == "emb(q)"   # falls back to live model
     reranker = _MemoReranker(_CountingReranker(), persist_path=bad)
     assert reranker.rerank("q", [_result("c1")], top_k=1)
+
+
+def test_memo_embedder_batches_only_the_cache_misses() -> None:
+    from scripts.eval import _MemoEmbedder
+
+    inner = _CountingEmbedder()
+    memo = _MemoEmbedder(inner)
+    memo.embed_query("q1")                                   # warm one entry
+    out = memo.embed_queries(["q1", "q2", "q3"])             # mixed hit/miss
+    assert out == ["emb(q1)", "emb(q2)", "emb(q3)"]
+    assert inner.batches == [["q1"], ["q2", "q3"]]           # misses batched once
+    assert memo.embed_queries(["q3", "q2"]) == ["emb(q3)", "emb(q2)"]
+    assert len(inner.batches) == 2                           # fully served by cache

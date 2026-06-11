@@ -58,6 +58,9 @@ class HashingEmbedder:
     def embed_documents(self, texts: list[str]) -> list[Embedding]:
         return [self._embed_one(t) for t in texts]
 
+    def embed_queries(self, texts: list[str]) -> list[Embedding]:
+        return [self._embed_one(t) for t in texts]
+
     def embed_query(self, text: str) -> Embedding:
         return self._embed_one(text)
 
@@ -117,6 +120,9 @@ class SentenceTransformerEmbedder:
             Embedding(dense=[float(x) for x in v], sparse=self._sparse(t))
             for t, v in zip(texts, vecs)
         ]
+
+    def embed_queries(self, texts: list[str]) -> list[Embedding]:
+        return self.embed_documents(texts)
 
     def embed_query(self, text: str) -> Embedding:
         return self.embed_documents([text])[0]

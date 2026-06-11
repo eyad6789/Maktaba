@@ -444,14 +444,25 @@ class _MemoEmbedder:
                                persist_path, exc)
                 self._cache = {}
 
+    _SAVE_EVERY = 8  # new entries between incremental saves (kill-resilience)
+
     def embed_query(self, text: str) -> Any:
-        if text not in self._cache:
-            self._cache[text] = self._embedder.embed_query(text)
+        return self.embed_queries([text])[0]
+
+    def embed_queries(self, texts: list[str]) -> list[Any]:
+        missing = [t for t in texts if t not in self._cache]
+        if missing:
+            fresh = self._embedder.embed_queries(missing)
+            self._cache.update(zip(missing, fresh))
             self._dirty = True
-        return self._cache[text]
+            self._new_since_save = getattr(self, "_new_since_save", 0) + len(missing)
+            if self._new_since_save >= self._SAVE_EVERY:
+                self.save()
+        return [self._cache[t] for t in texts]
 
     def save(self) -> None:
         """Best-effort persist (no-op without a path or new entries)."""
+        self._new_since_save = 0
         if not self._path or not self._dirty:
             return
         try:
@@ -513,6 +524,9 @@ class _MemoReranker:
             for r in scored:
                 self._scores[(query, r.chunk_id)] = r.rerank_score
             self._dirty = True
+            self._new_since_save = getattr(self, "_new_since_save", 0) + len(scored)
+            if self._new_since_save >= 400:  # incremental save (kill-resilience)
+                self.save()
         for r in results:
             r.rerank_score = self._scores[(query, r.chunk_id)]
         ordered = sorted(results, key=lambda r: r.rerank_score or 0.0, reverse=True)
@@ -520,6 +534,7 @@ class _MemoReranker:
 
     def save(self) -> None:
         """Best-effort persist (no-op without a path or new entries)."""
+        self._new_since_save = 0
         if not self._path or not self._dirty:
             return
         try:

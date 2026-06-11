@@ -22,10 +22,15 @@ class RecordingEmbedder:
 
     def __init__(self) -> None:
         self.texts: list[str] = []
+        self.batches: list[list[str]] = []
+
+    def embed_queries(self, texts: list[str]):
+        self.batches.append(list(texts))
+        self.texts.extend(texts)
+        return [None] * len(texts)
 
     def embed_query(self, text: str):
-        self.texts.append(text)
-        return None
+        return self.embed_queries([text])[0]
 
 
 class RecordingReranker:
@@ -107,3 +112,41 @@ def test_expansion_variants_are_normalized_too(monkeypatch) -> None:
     assert embedder.texts[1] == normalize_text(variant_raw)
     assert "إ" not in embedder.texts[1]
     assert "ـ" not in embedder.texts[1]
+
+
+def test_question_and_variants_embed_in_one_batched_call(monkeypatch) -> None:
+    """Efficiency contract: ONE embed_queries call for question + variants."""
+    import retrieval.expand as expand_mod
+
+    monkeypatch.setattr(settings, "enable_multi_query", True)
+    monkeypatch.setattr(
+        expand_mod, "expand_queries", lambda q, **kw: ["variant one", "variant two"]
+    )
+    embedder = RecordingEmbedder()
+    retrieve(
+        "Where does the author discuss justice?", embedder=embedder,
+        store=StubStore(), reranker=RecordingReranker(), route=Route.LOCAL,
+    )
+    assert len(embedder.batches) == 1                 # single batched model call
+    assert len(embedder.batches[0]) == 3              # question + 2 variants
+
+
+def test_batched_embed_failure_falls_back_to_question_alone(monkeypatch) -> None:
+    import retrieval.expand as expand_mod
+
+    monkeypatch.setattr(settings, "enable_multi_query", True)
+    monkeypatch.setattr(expand_mod, "expand_queries", lambda q, **kw: ["variant"])
+
+    class FlakyEmbedder(RecordingEmbedder):
+        def embed_queries(self, texts):
+            if len(texts) > 1:
+                raise RuntimeError("batch failed")
+            return super().embed_queries(texts)
+
+    embedder = FlakyEmbedder()
+    results = retrieve(
+        "Where does the author discuss justice?", embedder=embedder,
+        store=StubStore(), reranker=RecordingReranker(), route=Route.LOCAL,
+    )
+    assert results                                    # retrieval still answered
+    assert embedder.batches == [["Where does the author discuss justice?"]]
